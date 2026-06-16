@@ -25,12 +25,15 @@ src/readafp/
   bcoca.py     # BCOCA bar code decoder → BarCode + QR PNG via segno
   goca.py      # GOCA drawing-order decoder → GocaGraphic / SVG fragment
   foca.py      # FOCA raster-font decoder → Font / Glyph bitmaps (PNG)
+  type1.py     # Adobe Type 1 (PFB) charstring interpreter → outline paths
+  cff.py       # CFF / CID-keyed Type 2 charstring interpreter → outline paths
   app.py       # Flask app (POST /inspect), create_app()
   templates/index.html   # split-pane UI
 
 tests/
   test_parser.py, test_ptoca.py, test_triplets.py,
-  test_ioca.py, test_bcoca.py, test_app.py, test_foca.py, test_goca.py
+  test_ioca.py, test_bcoca.py, test_app.py, test_foca.py, test_goca.py,
+  test_cff.py
 
 testdata/
   sample1_health/     # modern TrueType AFP + PDF ground truth (1 page, 306 text runs)
@@ -126,16 +129,23 @@ pel = 1, inverted to PNG's 0=black). Font-resource files with no
 document pages render a specimen sheet (one page per raster font, glyph
 grid labeled by GCGID) via `_font_specimen_pages()` in `ptoca.py`.
 
-Outline fonts (Type 1 PFB / CID) have no bitmaps. The embedded font
-program in the FNG is interpreted by `type1.py` (PFB extraction, eexec +
-charstring decrypt, a Type 1 charstring interpreter with callsubr / flex
-/ hint-replacement / `seac` accent composition) into outline paths.
-`_decode_outlines()` in `foca.py` decodes each character's glyph keyed by
-GCGID, attaching `outline_glyphs` + `units_per_em` to the `Font`.
+Outline fonts (Type 1 PFB / CFF / CID) have no bitmaps. The embedded font
+program in the FNG is interpreted into outline paths: `type1.py` for Adobe
+Type 1 PFB (PFB extraction, eexec + charstring decrypt, a Type 1
+charstring interpreter with callsubr / flex / hint-replacement / `seac`
+accent composition), and `cff.py` for CFF — a Type 2 charstring
+interpreter over the CFF data structures (INDEX, Top/Private DICT,
+charset, global+local Subrs, and for CID-keyed fonts the ROS marker plus
+FDArray/FDSelect that pick each glyph's Private dict and subrs).
+`_decode_outlines()` in `foca.py` sniffs the FNG (`_is_cff`: bare-CFF
+`01 00` header or `OTTO` wrapper) to choose the interpreter, then decodes
+each character's glyph keyed by GCGID, attaching `outline_glyphs` +
+`units_per_em` to the `Font`. Both interpreters expose the same
+`Glyph`/`glyph_to_path_d` shape (defined in `type1.py`).
 `_outline_glyph_page()` then draws the **actual glyph shapes** as SVG
 `<path>`s (one `VectorGraphic` per glyph, baseline-aligned, labeled by
 name) — the font's true printed outline. If the outlines can't be
-decoded (a real CFF/CID font, or a decode failure), `_outline_font_page()`
+decoded (a decode failure), `_outline_font_page()`
 falls back to a metadata sheet: typeface, the technology sniffed from the
 FNG header (`%!PS-AdobeFont` ⇒ Adobe Type 1 PFB), the character count, and
 a `GCGID · glyph name · increment` grid. FNI records repeat per rotation,
@@ -158,22 +168,37 @@ local-id→name indirection is not yet handled.
 
 ## What's Not Yet Implemented
 
-- FOCA outline fonts: Adobe Type 1 (PFB) glyph shapes ARE now rasterized
-  to SVG paths for the specimen (`type1.py`). Still open: true CFF /
-  CID-keyed (Type 0) fonts use Type 2 charstrings — a different
-  interpreter, so those fall back to the metadata sheet.
-- Document text in the file's own fonts (Phase B) — done for **raster**
-  fonts whose code page is also embedded: a TRN run resolves each byte
-  through the embedded code page (CPI → GCGID) to a glyph in the embedded
-  character set and draws the real bitmap (`_emit_embedded_glyphs` in
-  `ptoca.py`, fed by `_scan_code_pages` + `triplets.mcf_font_resources`).
-  Still open: (a) text whose code page is **external** (e.g. cp1140, the
-  bulk of `Sample 1.afp`) — we have the codec but not the byte→GCGID map,
-  so it stays substitute Arial and is flagged by the missing-resources
-  panel; (b) glyph advance uses the scaled bitmap width — the FNI metric
+- FOCA outline fonts: both Adobe Type 1 (PFB, `type1.py`) and CFF /
+  CID-keyed (Type 0, `cff.py`) glyph shapes ARE now rasterized to SVG
+  paths for the specimen. `foca._decode_outlines` sniffs the FNG program
+  (`_is_cff`) and dispatches to the Type 2 interpreter for bare-CFF or
+  OTTO-wrapped programs, the Type 1 interpreter otherwise. CID fonts use
+  the FDArray/FDSelect to pick each glyph's Private dict and local subrs.
+  No CFF font exists in the corpus (the two PatTech X'1F' fonts embed
+  Type 1 PFB), so `cff.py` is validated against fontTools as an
+  independent oracle — see `tests/test_cff.py` and the fixtures built by
+  `tools/make_cff_sample.py`. Both Type 1 and CFF outline glyphs are now
+  wired into **document** text as well as the specimen (see Phase B below).
+- Document text in the file's own fonts (Phase B) — done for both
+  **raster** and **outline** fonts whose code page is also embedded. A TRN
+  run resolves each byte through the embedded code page (CPI → GCGID) to a
+  glyph in the embedded character set: raster glyphs draw as real bitmaps
+  (`_emit_embedded_glyphs`); outline glyphs (Type 1 / CFF) draw as one
+  `<path>` VectorGraphic per run, laid out in the font's design-unit space
+  and scaled so the em maps to the run's point size, stepping by each
+  glyph's **exact** design-unit advance (`_emit_embedded_outlines`). Both
+  are fed by `_scan_code_pages` + `triplets.mcf_font_resources` and keyed
+  by MCF local id. No corpus document uses an embedded outline font, so the
+  outline path is validated against a synthetic fixture
+  (`testdata/cff_document_sample.afp`, built by `make_cff_sample.py`) whose
+  glyph shapes still trace to the fontTools-validated CFF outlines. Still
+  open: (a) text whose code page is **external** (e.g. cp1140, the bulk of
+  `Sample 1.afp`) — we have the codec but not the byte→GCGID map, so it
+  stays substitute Arial and is flagged by the missing-resources panel;
+  (b) raster glyph advance uses the scaled bitmap width — the FNI metric
   increment is in a different design unit (pattern pels vs metric units)
-  not yet reconciled; (c) outline (Type 1) glyphs are not yet wired into
-  document text, only the specimen; (d) only 0° orientation.
+  not yet reconciled (the outline path sidesteps this by using the glyph's
+  own advance); (c) only 0° orientation for embedded glyphs.
 - FNI character-increment widths are not yet fed into document text
   fitting (render still uses position-anchored width estimation; the
   primary health-coverage sample embeds no fonts, so it cannot benefit).

@@ -320,16 +320,21 @@ def _sec_color(params: bytes) -> Optional[str]:
 
 @dataclass
 class _EmbeddedFont:
-    """A coded font whose code page and glyph bitmaps are both embedded.
+    """A coded font whose code page and glyphs are both embedded.
 
-    Lets document text be drawn in the file's own raster font: each text
-    byte resolves through ``cp_map`` (code point → GCGID) to a glyph in
-    ``glyphs`` (GCGID → foca.Glyph bitmap).
+    Lets document text be drawn in the file's own font: each text byte
+    resolves through ``cp_map`` (code point → GCGID) to a glyph. Raster
+    fonts use ``glyphs`` (GCGID → foca.Glyph bitmap); outline fonts (Type 1
+    / CFF) instead carry ``outline_glyphs`` (GCGID → type1.Glyph path) and
+    a design-unit ``units_per_em`` so each glyph can be drawn as an SVG
+    path scaled to the run's point size.
     """
 
     cp_map: Dict[int, str]
     glyphs: Dict[str, object]
     ref_height: int = 1  # tallest glyph box (pels): the uniform scale base
+    outline_glyphs: Optional[Dict[str, object]] = None
+    units_per_em: int = 0
 
 
 class _TextState:
@@ -404,7 +409,10 @@ class _TextState:
             size = info.size or max(page.units_per_inch // 6, 8)
             emb = self.embedded_text_fonts.get(self.font_id)
             if emb is not None and self.orientation == 0:
-                self._emit_embedded_glyphs(page, p, emb, size)
+                if emb.outline_glyphs:
+                    self._emit_embedded_outlines(page, p, emb, size)
+                else:
+                    self._emit_embedded_glyphs(page, p, emb, size)
                 return
             # Default size is ~12pt in the page's own resolution (1440/inch
             # gives 240; FOP emits 240/inch where 12pt is just 40).
@@ -510,6 +518,54 @@ class _TextState:
             )
             x += w + gap
         self.i = x
+
+    def _emit_embedded_outlines(
+        self, page: Page, data: bytes, emb: "_EmbeddedFont", size: int
+    ) -> None:
+        """Draw a TRN run with the file's own embedded outline glyphs.
+
+        Each byte resolves through the code page to a GCGID and its outline
+        (Type 1 or CFF). The whole run is emitted as one vector graphic: a
+        single ``<path>`` of every glyph laid out in the font's design-unit
+        space, then scaled so the em maps to the run's point size. Unlike
+        the raster path, advances are exact — each glyph steps by its own
+        design-unit advance width.
+        """
+        if len(page.graphics) >= MAX_RUNS_PER_PAGE:
+            page.truncated = True
+            return
+        em = emb.units_per_em or 1000
+        ascent = round(0.90 * em)   # baseline depth from the box top
+        box_h = round(1.20 * em)    # headroom for caps + descenders
+        space = round(0.5 * em)     # advance for a byte with no glyph
+        scale = size / em           # design units → L-units
+        paths: List[str] = []
+        x_design = 0.0
+        for byte in data:
+            gcgid = emb.cp_map.get(byte)
+            glyph = emb.outline_glyphs.get(gcgid) if gcgid else None
+            segments = getattr(glyph, "segments", None)
+            if not segments:
+                x_design += space
+                continue
+            paths.append(glyph_to_path_d(glyph, scale=1, ox=x_design, oy=ascent))
+            x_design += getattr(glyph, "advance", 0) or space
+        if paths:
+            fill = self.color or DEFAULT_COLOR
+            page.graphics.append(
+                VectorGraphic(
+                    x=self.i,
+                    y=self.b - round(ascent * scale),
+                    width=max(1, round(x_design * scale)),
+                    height=max(1, round(box_h * scale)),
+                    graphic=GocaGraphic(
+                        svg=f'<path d="{"".join(paths)}" fill="{fill}"/>',
+                        gps_w=max(1, round(x_design)),
+                        gps_h=box_h,
+                    ),
+                )
+            )
+        self.i += round(x_design * scale)
 
 
 def _estimate_font_sizes(page: Page, known_fonts: Dict[int, FontInfo]) -> None:
@@ -795,6 +851,13 @@ def extract_pages(
         for font in _parsed_fonts
         if font.glyphs and font.name
     }
+    # Outline (Type 1 / CFF) character sets: GCGID → outline glyph + the
+    # font's design-unit em, for drawing document text as real glyph paths.
+    char_set_outlines = {
+        font.name: (font.outline_glyphs, font.units_per_em)
+        for font in _parsed_fonts
+        if font.outline_glyphs and font.name
+    }
     # Even when a char set's glyphs can't be drawn (its code page is
     # external), its typeface tells us a better substitute font than Arial.
     char_set_typefaces = {
@@ -969,10 +1032,17 @@ def extract_pages(
             ).items():
                 cp_map = code_pages.get(cp_name or "")
                 glyphs = char_set_glyphs.get(cs_name or "")
+                outlines = char_set_outlines.get(cs_name or "")
                 if cp_map and glyphs:
                     ref = max((g.height for g in glyphs.values()), default=1)
                     embedded_text_fonts[lid] = _EmbeddedFont(
                         cp_map, glyphs, ref
+                    )
+                elif cp_map and outlines and outlines[0]:
+                    outline_glyphs, em = outlines
+                    embedded_text_fonts[lid] = _EmbeddedFont(
+                        cp_map, {}, 1,
+                        outline_glyphs=outline_glyphs, units_per_em=em,
                     )
                 # Choose a substitute font from the char set's typeface
                 # (MDR, if present, already set a better one).

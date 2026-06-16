@@ -23,7 +23,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from readafp import type1
+from readafp import cff, type1
 from readafp.ioca import pack_png
 from readafp.parser import StructuredField
 
@@ -240,6 +240,18 @@ def _fnn_glyph_names(fnn: bytes) -> Dict[str, str]:
     return names
 
 
+def _is_cff(fng: bytes) -> bool:
+    """True if the FNG payload is a CFF program (bare or OTTO-wrapped).
+
+    A bare CFF opens with version (major=1, minor=0) and a header size of at
+    least 4; an OpenType/CFF wrapper opens with the ``OTTO`` sfnt tag.
+    """
+    return (
+        fng[:4] == b"OTTO"
+        or (len(fng) >= 4 and fng[0] == 1 and fng[1] == 0 and 4 <= fng[2] <= 32)
+    )
+
+
 def _sniff_outline_format(fng: bytes) -> str:
     """Identify an outline font program from its FNG payload signature.
 
@@ -251,7 +263,9 @@ def _sniff_outline_format(fng: bytes) -> str:
     head = fng[:512]
     if b"%!PS-AdobeFont" in head or b".PFB" in head:
         return "Adobe Type 1 (PFB) outline"
-    if b"OTTO" in head[:64] or head[:4] == b"\x01\x00\x04\x00":
+    if fng[:4] == b"OTTO":
+        return "CFF (OpenType) outline"
+    if _is_cff(fng):
         return "CFF / CID-keyed outline"
     return ""
 
@@ -275,16 +289,22 @@ def _dedup_orientations(raw: List[CharMetric]) -> tuple:
 def _decode_outlines(
     fng: bytes, chars: List[CharMetric]
 ) -> tuple:
-    """Decode each character's Type 1 outline from the FNG program.
+    """Decode each character's outline from the embedded FNG font program.
 
-    Returns (units_per_em, {GCGID: Glyph}). Only Adobe Type 1 (PFB) fonts
-    are interpreted; on any failure the outlines come back empty and the
-    caller falls back to a metrics-only specimen.
+    Dispatches on the program signature: a CFF program (bare or OTTO-
+    wrapped) is interpreted with the Type 2 charstring engine in
+    :mod:`readafp.cff`; otherwise an Adobe Type 1 (PFB) program is decoded
+    with :mod:`readafp.type1`. Returns (units_per_em, {GCGID: Glyph}); on
+    any failure the outlines come back empty and the caller falls back to a
+    metrics-only specimen.
     """
     try:
-        font = type1.Type1Font(fng)
+        if _is_cff(fng):
+            font = cff.CFFFont(fng)
+        else:
+            font = type1.Type1Font(fng)
     except (ValueError, IndexError, struct.error) as exc:
-        logger.warning("Type 1 program decode failed: %s", exc)
+        logger.warning("Outline program decode failed: %s", exc)
         return 0, {}
     if not font.glyph_names:
         return 0, {}
