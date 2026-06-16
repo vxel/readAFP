@@ -466,27 +466,24 @@ def test_sto_resets_position() -> None:
 
 
 def test_embedded_raster_font_text_renders_as_glyphs() -> None:
-    # Sample 1.afp embeds its raster character sets. Text is drawn in the
-    # file's own glyphs whether its code page is embedded (T1AAAAAA, local
-    # ids 3/5) or external (cp1140 / T1001140): the external code page is
-    # bridged byte->GCGID from the codec via the standard GCGID naming rules
-    # (readafp.gcgid), so the bulk text renders in real glyphs too.
-    # Punctuation-heavy runs the bridge can't cover fall back to substitute.
+    # Sample 1.afp embeds its raster character sets. Display-size text (the
+    # 60pt title, a 28pt heading) is drawn in the file's own glyphs — the
+    # external cp1140 code page is bridged byte->GCGID via readafp.gcgid.
+    # Small body fonts (10pt) stay as a substitute font because 1-bit
+    # bitmaps look rough scaled down (the _EMBED_MIN_POINT_SIZE gate).
     sample = TESTDATA / "Sample Files" / "Sample 1.afp"
     if not sample.exists():
         pytest.skip("Sample 1 not present")
     page = extract_pages(parse_file(str(sample)))[0]
     glyph_imgs = [im for im in page.images if im.crisp]
-    # The bulk body text (external cp1140) now draws in embedded glyphs,
-    # far more than the 35 characters the embedded code page alone covered.
-    assert len(glyph_imgs) > 1000
+    # Only the large title/heading glyphs render as bitmaps, not the body.
+    assert 0 < len(glyph_imgs) < 50
     assert all(im.data.startswith(b"\x89PNG") for im in glyph_imgs)
-    # Scaled to a sane glyph box: a short glyph (em dash, minus) must not
-    # blow up to a full-height black bar. One font scale, not per-glyph
-    # height, keeps both dimensions within a character cell.
-    assert all(0 < im.height < page.units_per_inch for im in glyph_imgs)
-    assert all(0 < im.width < page.units_per_inch for im in glyph_imgs)
-    assert page.texts  # punctuation-heavy runs still fall back to substitute
+    # The large embedded glyphs are sizeable (display fonts), well over the
+    # tiny boxes a 10pt body font would produce.
+    assert max(im.height for im in glyph_imgs) > page.units_per_inch // 4
+    # The bulk body text falls back to many substitute runs.
+    assert len(page.texts) > 100
 
 
 def test_embedded_glyph_runs_keep_extractable_text() -> None:

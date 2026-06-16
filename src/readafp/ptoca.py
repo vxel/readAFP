@@ -356,6 +356,12 @@ class _EmbeddedFont:
 # code page can't map) never riddle a word with blank gaps.
 _EMBED_COVERAGE_MIN = 0.7
 
+# Embedded *raster* glyphs are 1-bit bitmaps: crisp when large but thin and
+# aliased once a small body font is scaled down to screen. So only draw them
+# for display-size fonts (titles, headings) and let smaller text fall back to
+# a clean substitute font. Outline (vector) glyphs have no such limit.
+_EMBED_MIN_POINT_SIZE = 20.0
+
 
 class _TextState:
     """Mutable PTOCA interpreter state, carried across PTX fields of a page."""
@@ -544,9 +550,13 @@ class _TextState:
         L-units (``point_size/72 × upi``) — so spacing follows the real
         metrics, not the bitmap width. Falls back to the older box-height
         scaling when a font omits resolution/point-size. Returns False
-        without drawing when too few bytes resolve, so the caller can
-        substitute the whole run instead.
+        without drawing when the font is too small for crisp bitmaps or too
+        few bytes resolve, so the caller can substitute the whole run.
         """
+        # Small raster fonts look rough scaled down; only large display
+        # fonts (titles/headings) render as bitmaps, the rest substitute.
+        if emb.point_size < _EMBED_MIN_POINT_SIZE:
+            return False
         if not self._embed_covers(data, emb, emb.glyphs):
             return False
         self._record_embedded_text(page, data, emb, self.i, self.b)

@@ -215,14 +215,22 @@ local-id→name indirection is not yet handled.
   `upi/resolution` L-units and the pen advances by each glyph's FNI
   **character increment** (1000/em) × the em in L-units — not the bitmap
   width. Each glyph's FNI **baseline offset** (bytes 12-13, 1000/em) drops
-  descenders (g, p, q, y) below the line. With these three fixes Sample 1's
-  body renders ~1900 real embedded TIMES-ROMAN/COURIER glyphs, readable and
-  faithful (verified by Playwright screenshot against the substitute
-  baseline).
+  descenders (g, p, q, y) below the line.
+
+  **Size gate** (`_EMBED_MIN_POINT_SIZE`, 20pt): raster glyphs are 1-bit
+  bitmaps — crisp at display sizes but thin and aliased once a small body
+  font is scaled down to screen. So `_emit_embedded_glyphs` only draws them
+  for large fonts (titles/headings) and lets smaller text fall back to a
+  clean substitute font. On Sample 1 this renders the 60pt "GNU Troff"
+  title and a 28pt heading in real embedded TIMES-ROMAN, while the 10pt
+  body stays substitute — the readable hybrid (verified by Playwright
+  screenshot). Two earlier all-or-nothing attempts (rendering *all* body
+  text as bitmaps) were backed out for looking worse than substitute.
 
   Still open: (a) embedded raster glyphs render in black — STC/SEC text
   color isn't applied to the 1-bit bitmaps; (b) only 0° orientation for
-  embedded glyphs.
+  embedded glyphs; (c) small embedded raster fonts could be rendered if
+  upscaled with anti-aliasing rather than nearest-neighbor.
 - FNI character-increment widths are not yet fed into document text
   fitting (render still uses position-anchored width estimation; the
   primary health-coverage sample embeds no fonts, so it cannot benefit).
