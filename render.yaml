@@ -1,0 +1,11 @@
+# Render.com blueprint — one-click deploy of readAFP.
+# In Render: New → Blueprint → connect the GitHub repo → Apply.
+# Gives an HTTPS https://readafp.onrender.com URL; add a custom domain later.
+services:
+  - type: web
+    name: readafp
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --chdir src "readafp.app:create_app()" --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    autoDeploy: true
