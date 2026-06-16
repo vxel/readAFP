@@ -30,6 +30,12 @@
       padding: 4px 0 8px;
     }
     .brand { font-size: 1.15rem; font-weight: 700; white-space: nowrap; }
+    .beta {
+      display: inline-block; vertical-align: middle; margin-left: 6px;
+      padding: 1px 7px; border-radius: 9px; font-size: 0.62rem;
+      font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      color: #fff; background: var(--accent);
+    }
     form { display: flex; gap: 8px; align-items: center; margin: 0; }
     input[type=file] { color: var(--dim); max-width: 240px; }
     select {
@@ -257,7 +263,7 @@
 </head>
 <body>
   <div class="topbar">
-    <span class="brand" title="Upload an AFP (Advanced Function Presentation) file to inspect its MO:DCA structure.">readAFP 🔍</span>
+    <span class="brand" title="Upload an AFP (Advanced Function Presentation) file to inspect its MO:DCA structure.">readAFP 🔍<span class="beta">Beta</span></span>
     <form action="/inspect" method="post" enctype="multipart/form-data">
       <input type="file" name="afpfile" accept=".afp,.afpds,.list3820">
       <select name="codepage" title="EBCDIC code page used to decode text (when the file doesn't say)">
@@ -714,7 +720,7 @@
     </div>
     <div class="about-body">
       <div>
-        <h2>readAFP <span class="ver">v{{ app_version }}</span></h2>
+        <h2>readAFP <span class="ver">v{{ app_version }}</span><span class="beta">Beta</span></h2>
         <p>AFP / MO:DCA file inspector and SVG renderer</p>
       </div>
       <hr>

@@ -64,10 +64,25 @@ Drop any `.afp` file on the page — or try one of the bundled samples:
 | `testdata/bcoca_sample.afp` | Synthetic BCOCA QR bar code (repo URL) |
 | `testdata/overlay_sample.afp` | Page overlay — letterhead/footer composited via IPO |
 
+## Deploy
+
+The app is a stateless WSGI app exposed by `readafp.app:create_app()`. For a
+public host, run it under a production server (not `run.py`, which is the
+local dev server). `Procfile` and `render.yaml` are included:
+
+```bash
+# any Linux host:
+gunicorn --chdir src "readafp.app:create_app()" --bind 0.0.0.0:$PORT
+```
+
+Easiest path: on [Render](https://render.com) choose **New → Blueprint**,
+connect this GitHub repo, **Apply** — it builds from `render.yaml` and serves
+HTTPS at `https://<name>.onrender.com`. Point a custom domain at it later.
+
 ## Test
 
 ```bash
-pytest          # 114 tests
+pytest
 pytest tests/test_goca.py -v   # GOCA decoder only
 ```
 
