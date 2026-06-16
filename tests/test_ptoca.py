@@ -466,20 +466,36 @@ def test_sto_resets_position() -> None:
 
 
 def test_embedded_raster_font_text_renders_as_glyphs() -> None:
-    # Sample 1.afp embeds both a code page (T1AAAAAA) and the character set
-    # it pairs with, so that text (local ids 3 and 5) can be drawn in the
-    # file's own raster glyphs instead of a substitute font. The bulk text
-    # uses an external code page and stays as substitute text runs.
+    # Sample 1.afp embeds its raster character sets. Text is drawn in the
+    # file's own glyphs whether its code page is embedded (T1AAAAAA, local
+    # ids 3/5) or external (cp1140 / T1001140): the external code page is
+    # bridged byte->GCGID from the codec via the standard GCGID naming rules
+    # (readafp.gcgid), so the bulk text renders in real glyphs too.
+    # Punctuation-heavy runs the bridge can't cover fall back to substitute.
     sample = TESTDATA / "Sample Files" / "Sample 1.afp"
     if not sample.exists():
         pytest.skip("Sample 1 not present")
     page = extract_pages(parse_file(str(sample)))[0]
     glyph_imgs = [im for im in page.images if im.crisp]
-    assert len(glyph_imgs) == 35  # the embedded-code-page characters
+    # The bulk body text (external cp1140) now draws in embedded glyphs,
+    # far more than the 35 characters the embedded code page alone covered.
+    assert len(glyph_imgs) > 1000
     assert all(im.data.startswith(b"\x89PNG") for im in glyph_imgs)
     # Scaled to a sane glyph box: a short glyph (em dash, minus) must not
     # blow up to a full-height black bar. One font scale, not per-glyph
     # height, keeps both dimensions within a character cell.
     assert all(0 < im.height < page.units_per_inch for im in glyph_imgs)
     assert all(0 < im.width < page.units_per_inch for im in glyph_imgs)
-    assert page.texts  # the externally-resourced bulk still renders
+    assert page.texts  # punctuation-heavy runs still fall back to substitute
+
+
+def test_embedded_glyph_runs_keep_extractable_text() -> None:
+    # Runs drawn as embedded glyph bitmaps must still contribute to the
+    # page's plain text (Copy-text / .txt export), via the hidden text
+    # layer keyed on the run's code-page codec.
+    sample = TESTDATA / "Sample Files" / "Sample 1.afp"
+    if not sample.exists():
+        pytest.skip("Sample 1 not present")
+    page = extract_pages(parse_file(str(sample)))[0]
+    assert page.text_layer  # glyph-drawn runs recorded their decoded text
+    assert "groff" in page.plain_text.lower()

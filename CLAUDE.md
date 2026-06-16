@@ -27,13 +27,14 @@ src/readafp/
   foca.py      # FOCA raster-font decoder → Font / Glyph bitmaps (PNG)
   type1.py     # Adobe Type 1 (PFB) charstring interpreter → outline paths
   cff.py       # CFF / CID-keyed Type 2 charstring interpreter → outline paths
+  gcgid.py     # external code page → embedded glyph bridge (byte→GCGID)
   app.py       # Flask app (POST /inspect), create_app()
   templates/index.html   # split-pane UI
 
 tests/
   test_parser.py, test_ptoca.py, test_triplets.py,
   test_ioca.py, test_bcoca.py, test_app.py, test_foca.py, test_goca.py,
-  test_cff.py
+  test_cff.py, test_gcgid.py
 
 testdata/
   sample1_health/     # modern TrueType AFP + PDF ground truth (1 page, 306 text runs)
@@ -191,14 +192,30 @@ local-id→name indirection is not yet handled.
   by MCF local id. No corpus document uses an embedded outline font, so the
   outline path is validated against a synthetic fixture
   (`testdata/cff_document_sample.afp`, built by `make_cff_sample.py`) whose
-  glyph shapes still trace to the fontTools-validated CFF outlines. Still
-  open: (a) text whose code page is **external** (e.g. cp1140, the bulk of
-  `Sample 1.afp`) — we have the codec but not the byte→GCGID map, so it
-  stays substitute Arial and is flagged by the missing-resources panel;
-  (b) raster glyph advance uses the scaled bitmap width — the FNI metric
-  increment is in a different design unit (pattern pels vs metric units)
-  not yet reconciled (the outline path sidesteps this by using the glyph's
-  own advance); (c) only 0° orientation for embedded glyphs.
+  glyph shapes still trace to the fontTools-validated CFF outlines.
+
+  **External code pages** (e.g. cp1140, the bulk of `Sample 1.afp`) are now
+  bridged too: when the code page is *not* embedded but the character set
+  *is*, `gcgid.bridge_code_page` reconstructs byte→GCGID from the codec
+  (byte→Unicode) via the standard GCGID naming rules — `UNICxxxx` for any
+  scalar, `L{c}01/02` for Latin letters, `ND` for digits, `SP010000` for
+  space (FOCA reference Fig. 56, verified against Sample 1's embedded
+  fonts). Only authoritative, font-present mappings are produced, so a byte
+  is never drawn as the wrong glyph; punctuation and accent GCGIDs aren't
+  derived (their figure assignments can't be read unambiguously) and stay
+  unmapped. A run is drawn in embedded glyphs only when ≥ 70 %
+  (`_EMBED_COVERAGE_MIN`) of its bytes resolve, else the whole run falls
+  back to a substitute font — no half-bridged words. Runs drawn as glyphs
+  still record their decoded text in a hidden `Page.text_layer` so
+  Copy-text / `.txt` export stays complete. With this, Sample 1's body now
+  renders ~1400 real embedded glyphs instead of all-substitute.
+
+  Still open: (a) punctuation / accented-letter GCGIDs for the bridge
+  (needs the Fig. 56 grid transcribed and codec-validated); (b) raster
+  glyph advance uses the scaled bitmap width — the FNI metric increment is
+  in a different design unit (pattern pels vs metric units) not yet
+  reconciled (the outline path sidesteps this by using the glyph's own
+  advance); (c) only 0° orientation for embedded glyphs.
 - FNI character-increment widths are not yet fed into document text
   fitting (render still uses position-anchored width estimation; the
   primary health-coverage sample embeds no fonts, so it cannot benefit).

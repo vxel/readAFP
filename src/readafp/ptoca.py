@@ -21,6 +21,7 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 from readafp.bcoca import barcode_png, parse_barcode
 from readafp.foca import Font, parse_code_page, parse_fonts
+from readafp.gcgid import bridge_code_page
 from readafp.goca import GocaGraphic, draw_goca
 from readafp.ioca import cmyk_jpeg_bands, image_blob, parse_image_segment
 from readafp.parser import StructuredField
@@ -173,12 +174,21 @@ class Page:
     rules: List[Rule] = field(default_factory=list)
     images: List[ImageRef] = field(default_factory=list)
     graphics: List[VectorGraphic] = field(default_factory=list)
+    # Decoded text for runs drawn as embedded glyph shapes/bitmaps rather
+    # than <text>; not rendered, but kept so Copy-text / .txt export still
+    # yields the page's words.
+    text_layer: List[TextRun] = field(default_factory=list)
     truncated: bool = False  # content dropped after MAX_RUNS_PER_PAGE
 
     @property
     def plain_text(self) -> str:
-        """Text runs joined in reading order (top-down, then left-right)."""
-        ordered = sorted(self.texts, key=lambda r: (r.y, r.x))
+        """Text runs joined in reading order (top-down, then left-right).
+
+        Includes both substitute-font runs and the hidden text layer for
+        runs that were drawn as embedded glyphs, so the extracted text is
+        complete regardless of how each run was rendered.
+        """
+        ordered = sorted(self.texts + self.text_layer, key=lambda r: (r.y, r.x))
         lines: List[str] = []
         last_y: Optional[int] = None
         for run in ordered:
@@ -335,6 +345,14 @@ class _EmbeddedFont:
     ref_height: int = 1  # tallest glyph box (pels): the uniform scale base
     outline_glyphs: Optional[Dict[str, object]] = None
     units_per_em: int = 0
+    codec: Optional[str] = None  # codec for the hidden text-extraction layer
+
+
+# A TRN run is drawn in the embedded font only when at least this fraction
+# of its bytes resolve to a real glyph; below it the whole run falls back to
+# a substitute font, so a few unbridged bytes (e.g. punctuation an external
+# code page can't map) never riddle a word with blank gaps.
+_EMBED_COVERAGE_MIN = 0.7
 
 
 class _TextState:
@@ -409,11 +427,16 @@ class _TextState:
             size = info.size or max(page.units_per_inch // 6, 8)
             emb = self.embedded_text_fonts.get(self.font_id)
             if emb is not None and self.orientation == 0:
-                if emb.outline_glyphs:
+                drawn = (
                     self._emit_embedded_outlines(page, p, emb, size)
-                else:
-                    self._emit_embedded_glyphs(page, p, emb, size)
-                return
+                    if emb.outline_glyphs
+                    else self._emit_embedded_glyphs(page, p, emb, size)
+                )
+                if drawn:
+                    return
+                # Too few bytes resolved to embedded glyphs (e.g. a run that
+                # is mostly punctuation an external code page can't bridge):
+                # fall through and draw the whole run in a substitute font.
             # Default size is ~12pt in the page's own resolution (1440/inch
             # gives 240; FOP emits 240/inch where 12pt is just 40).
             text = _decode_trn(
@@ -477,9 +500,39 @@ class _TextState:
             )
         )
 
+    def _embed_covers(
+        self, data: bytes, emb: "_EmbeddedFont", glyphs: Dict[str, object]
+    ) -> bool:
+        """True if enough of ``data`` resolves to real embedded glyphs.
+
+        Empty/blank runs count as covered (nothing to draw). Otherwise the
+        fraction of bytes whose code-page GCGID has a glyph must reach
+        ``_EMBED_COVERAGE_MIN``, else the caller draws a substitute instead.
+        """
+        if not data:
+            return True
+        mapped = sum(1 for byte in data if emb.cp_map.get(byte) in glyphs)
+        return mapped / len(data) >= _EMBED_COVERAGE_MIN
+
+    def _record_embedded_text(
+        self, page: Page, data: bytes, emb: "_EmbeddedFont", x: int, y: int
+    ) -> None:
+        """Keep a run's decoded text for export when it is drawn as glyphs."""
+        if not emb.codec:
+            return
+        try:
+            text = data.decode(emb.codec, errors="replace")
+        except LookupError:
+            return
+        if text.strip():
+            page.text_layer.append(
+                TextRun(x=x, y=y, text=text, font_id=self.font_id,
+                        src=self.field_offset)
+            )
+
     def _emit_embedded_glyphs(
         self, page: Page, data: bytes, emb: "_EmbeddedFont", size: int
-    ) -> None:
+    ) -> bool:
         """Draw a TRN run with the file's own embedded raster glyphs.
 
         Each byte resolves through the code page to a GCGID and its glyph
@@ -487,8 +540,12 @@ class _TextState:
         font size and placed at the advancing inline position. The advance
         uses the scaled box width — the FNI metric increment lives in a
         different design unit (pattern pels vs metric units) that is not
-        yet reconciled, so spacing is approximate.
+        yet reconciled, so spacing is approximate. Returns False without
+        drawing when too few bytes resolve, so the caller can substitute.
         """
+        if not self._embed_covers(data, emb, emb.glyphs):
+            return False
+        self._record_embedded_text(page, data, emb, self.i, self.b)
         x, y = self.i, self.b
         space = max(1, int(size * 0.5))
         gap = max(1, round(size * 0.1))
@@ -518,10 +575,11 @@ class _TextState:
             )
             x += w + gap
         self.i = x
+        return True
 
     def _emit_embedded_outlines(
         self, page: Page, data: bytes, emb: "_EmbeddedFont", size: int
-    ) -> None:
+    ) -> bool:
         """Draw a TRN run with the file's own embedded outline glyphs.
 
         Each byte resolves through the code page to a GCGID and its outline
@@ -529,11 +587,15 @@ class _TextState:
         single ``<path>`` of every glyph laid out in the font's design-unit
         space, then scaled so the em maps to the run's point size. Unlike
         the raster path, advances are exact — each glyph steps by its own
-        design-unit advance width.
+        design-unit advance width. Returns False without drawing when too
+        few bytes resolve, so the caller can substitute.
         """
+        if not self._embed_covers(data, emb, emb.outline_glyphs):
+            return False
+        self._record_embedded_text(page, data, emb, self.i, self.b)
         if len(page.graphics) >= MAX_RUNS_PER_PAGE:
             page.truncated = True
-            return
+            return True
         em = emb.units_per_em or 1000
         ascent = round(0.90 * em)   # baseline depth from the box top
         box_h = round(1.20 * em)    # headroom for caps + descenders
@@ -566,6 +628,7 @@ class _TextState:
                 )
             )
         self.i += round(x_design * scale)
+        return True
 
 
 def _estimate_font_sizes(page: Page, known_fonts: Dict[int, FontInfo]) -> None:
@@ -1033,16 +1096,30 @@ def extract_pages(
                 cp_map = code_pages.get(cp_name or "")
                 glyphs = char_set_glyphs.get(cs_name or "")
                 outlines = char_set_outlines.get(cs_name or "")
+                # External code page (not embedded) but the character set IS
+                # embedded: reconstruct byte→GCGID from the codec via the
+                # standard GCGID naming rules, so the file's own glyphs can
+                # still be drawn instead of a substitute font.
+                if not cp_map:
+                    codec = font_codepages.get(lid)
+                    if codec:
+                        gset = set(glyphs or ()) | set(
+                            outlines[0] if outlines else ())
+                        bridged = bridge_code_page(codec, gset)
+                        if bridged:
+                            cp_map = bridged
+                codec = font_codepages.get(lid)  # for the hidden text layer
                 if cp_map and glyphs:
                     ref = max((g.height for g in glyphs.values()), default=1)
                     embedded_text_fonts[lid] = _EmbeddedFont(
-                        cp_map, glyphs, ref
+                        cp_map, glyphs, ref, codec=codec
                     )
                 elif cp_map and outlines and outlines[0]:
                     outline_glyphs, em = outlines
                     embedded_text_fonts[lid] = _EmbeddedFont(
                         cp_map, {}, 1,
                         outline_glyphs=outline_glyphs, units_per_em=em,
+                        codec=codec,
                     )
                 # Choose a substitute font from the char set's typeface
                 # (MDR, if present, already set a better one).
