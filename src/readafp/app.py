@@ -149,6 +149,11 @@ def create_app() -> Flask:
             samples=SAMPLES,
         )
 
+    @app.get("/healthz")
+    def healthz() -> tuple:
+        """Liveness probe for uptime monitors (returns 200 + JSON)."""
+        return {"status": "ok", "version": __version__}, 200
+
     @app.post("/inspect")
     def inspect() -> str:
         codepage = request.form.get("codepage", "cp500")
