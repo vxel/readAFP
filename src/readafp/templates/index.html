@@ -3,16 +3,22 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
   <title>readAFP — AFP / MO:DCA file inspector &amp; renderer</title>
   <meta name="description" content="Upload an AFP (Advanced Function Presentation / MO:DCA) file and explore its structured-field tree alongside an SVG render of every page. Decodes PTOCA text, IOCA images, BCOCA bar codes, and GOCA vector graphics.">
   <meta name="author" content="Keith Lutz">
   <meta name="keywords" content="AFP, MO:DCA, Advanced Function Presentation, AFP viewer, AFP inspector, PTOCA, IOCA, BCOCA, GOCA, mainframe print">
   <meta property="og:type" content="website">
+  <meta property="og:url" content="https://readafp.com/">
   <meta property="og:title" content="readAFP — AFP file inspector &amp; renderer">
   <meta property="og:description" content="Inspect and render AFP (MO:DCA) files in your browser. Structured-field tree, decoded triplets, SVG render of PTOCA text, IOCA images, BCOCA bar codes, and GOCA vector graphics.">
-  <meta name="twitter:card" content="summary">
+  <meta property="og:image" content="https://readafp.com/static/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="readAFP — AFP file inspector &amp; renderer">
   <meta name="twitter:description" content="Inspect and render AFP / MO:DCA files. Structured-field tree + SVG render — PTOCA, IOCA, BCOCA, GOCA all supported.">
+  <meta name="twitter:image" content="https://readafp.com/static/og.png">
   <style>
     :root {
       --bg: #12141d; --panel: #1a1d29; --card: #232737; --border: #313650;
