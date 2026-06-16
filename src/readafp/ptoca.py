@@ -346,6 +346,8 @@ class _EmbeddedFont:
     outline_glyphs: Optional[Dict[str, object]] = None
     units_per_em: int = 0
     codec: Optional[str] = None  # codec for the hidden text-extraction layer
+    resolution: int = 0  # raster font pattern resolution (pels/inch)
+    point_size: float = 0.0  # raster font nominal size (points)
 
 
 # A TRN run is drawn in the embedded font only when at least this fraction
@@ -536,44 +538,54 @@ class _TextState:
         """Draw a TRN run with the file's own embedded raster glyphs.
 
         Each byte resolves through the code page to a GCGID and its glyph
-        bitmap; the bitmap is scaled so its box height matches the run's
-        font size and placed at the advancing inline position. The advance
-        uses the scaled box width — the FNI metric increment lives in a
-        different design unit (pattern pels vs metric units) that is not
-        yet reconciled, so spacing is approximate. Returns False without
-        drawing when too few bytes resolve, so the caller can substitute.
+        bitmap. Pattern pels map to page L-units by the font's resolution
+        (``upi / pels-per-inch``); the inline pen advances by the glyph's
+        FNI character increment (in 1000ths of an em) scaled by the em in
+        L-units (``point_size/72 × upi``) — so spacing follows the real
+        metrics, not the bitmap width. Falls back to the older box-height
+        scaling when a font omits resolution/point-size. Returns False
+        without drawing when too few bytes resolve, so the caller can
+        substitute the whole run instead.
         """
         if not self._embed_covers(data, emb, emb.glyphs):
             return False
         self._record_embedded_text(page, data, emb, self.i, self.b)
         x, y = self.i, self.b
-        space = max(1, int(size * 0.5))
-        gap = max(1, round(size * 0.1))
-        # One scale for the whole font (its tallest glyph maps to the run
-        # size), so short glyphs like dashes stay short instead of being
-        # blown up to full height.
-        scale = size / (emb.ref_height or 1)
+        upi = page.units_per_inch
+        # Pattern pel → L-unit. With a known resolution the point-size
+        # factors cancel to a plain upi/resolution ratio; otherwise fall
+        # back to mapping the tallest glyph box to the run size.
+        pel = (upi / emb.resolution) if emb.resolution else (
+            size / (emb.ref_height or 1))
+        # Em → L-unit, for the 1000/em character increments.
+        em = round(emb.point_size / 72 * upi) if emb.point_size else size
+        default_adv = max(1, round(0.5 * em))  # advance for an unmapped byte
         for byte in data:
             if len(page.images) >= MAX_RUNS_PER_PAGE:
                 page.truncated = True
                 break
             gcgid = emb.cp_map.get(byte)
             glyph = emb.glyphs.get(gcgid) if gcgid else None
-            png = getattr(glyph, "png", None)
-            if glyph is None or not png or not glyph.height:
-                x += space
+            if glyph is None:
+                x += default_adv
                 continue
-            w = max(1, round(glyph.width * scale))
-            h = max(1, round(glyph.height * scale))
-            # Box bottom on the baseline (per-glyph baseline offset isn't
-            # decoded yet, so this is approximate for sub-baseline glyphs).
-            page.images.append(
-                ImageRef(
-                    x=x, y=y - h, width=w, height=h,
-                    mime="image/png", data=png, crisp=True,
+            inc = getattr(glyph, "char_increment", 0)
+            adv = round(inc / 1000 * em) if inc else default_adv
+            png = getattr(glyph, "png", None)
+            if png and glyph.height and glyph.width:
+                w = max(1, round(glyph.width * pel))
+                h = max(1, round(glyph.height * pel))
+                # The glyph box bottom sits below the baseline by its FNI
+                # baseline offset (1000/em), so descenders (g, p, q, y) drop
+                # under the line instead of resting on it.
+                drop = round(getattr(glyph, "baseline_offset", 0) / 1000 * em)
+                page.images.append(
+                    ImageRef(
+                        x=x, y=y - h + drop, width=w, height=h,
+                        mime="image/png", data=png, crisp=True,
+                    )
                 )
-            )
-            x += w + gap
+            x += max(adv, 1)
         self.i = x
         return True
 
@@ -914,6 +926,13 @@ def extract_pages(
         for font in _parsed_fonts
         if font.glyphs and font.name
     }
+    # Raster char-set metrics (resolution dpi, point size) for sizing and
+    # advancing the embedded bitmap glyphs at their true scale.
+    char_set_metrics = {
+        font.name: (font.resolution, font.point_size)
+        for font in _parsed_fonts
+        if font.glyphs and font.name
+    }
     # Outline (Type 1 / CFF) character sets: GCGID → outline glyph + the
     # font's design-unit em, for drawing document text as real glyph paths.
     char_set_outlines = {
@@ -1111,8 +1130,10 @@ def extract_pages(
                 codec = font_codepages.get(lid)  # for the hidden text layer
                 if cp_map and glyphs:
                     ref = max((g.height for g in glyphs.values()), default=1)
+                    res, psize = char_set_metrics.get(cs_name or "", (0, 0.0))
                     embedded_text_fonts[lid] = _EmbeddedFont(
-                        cp_map, glyphs, ref, codec=codec
+                        cp_map, glyphs, ref, codec=codec,
+                        resolution=res, point_size=psize,
                     )
                 elif cp_map and outlines and outlines[0]:
                     outline_glyphs, em = outlines

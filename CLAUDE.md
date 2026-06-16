@@ -197,25 +197,32 @@ local-id→name indirection is not yet handled.
   **External code pages** (e.g. cp1140, the bulk of `Sample 1.afp`) are now
   bridged too: when the code page is *not* embedded but the character set
   *is*, `gcgid.bridge_code_page` reconstructs byte→GCGID from the codec
-  (byte→Unicode) via the standard GCGID naming rules — `UNICxxxx` for any
-  scalar, `L{c}01/02` for Latin letters, `ND` for digits, `SP010000` for
-  space (FOCA reference Fig. 56, verified against Sample 1's embedded
-  fonts). Only authoritative, font-present mappings are produced, so a byte
-  is never drawn as the wrong glyph; punctuation and accent GCGIDs aren't
-  derived (their figure assignments can't be read unambiguously) and stay
-  unmapped. A run is drawn in embedded glyphs only when ≥ 70 %
-  (`_EMBED_COVERAGE_MIN`) of its bytes resolve, else the whole run falls
-  back to a substitute font — no half-bridged words. Runs drawn as glyphs
-  still record their decoded text in a hidden `Page.text_layer` so
-  Copy-text / `.txt` export stays complete. With this, Sample 1's body now
-  renders ~1400 real embedded glyphs instead of all-substitute.
+  (byte→Unicode) via an authoritative character→GCGID table for IBM
+  character set 103, transcribed from FOCA reference **Figure 56** ("EBCDIC
+  Code Page 500 With Character Set 103") — all 95 cells verified against the
+  `cp500` codec (`gcgid._CS103_CP500`). Note lowercase is `L{c}010000`,
+  uppercase `L{c}020000` (not the reverse). Outside CS103 it falls back to
+  the algorithmic `UNICxxxx`. Only font-present mappings are produced, so a
+  byte is never drawn as the wrong glyph. A run is drawn in embedded glyphs
+  only when ≥ 70 % (`_EMBED_COVERAGE_MIN`) of its bytes resolve, else the
+  whole run falls back to a substitute font — no half-bridged words. Runs
+  drawn as glyphs record their decoded text in a hidden `Page.text_layer`
+  so Copy-text / `.txt` export stays complete.
 
-  Still open: (a) punctuation / accented-letter GCGIDs for the bridge
-  (needs the Fig. 56 grid transcribed and codec-validated); (b) raster
-  glyph advance uses the scaled bitmap width — the FNI metric increment is
-  in a different design unit (pattern pels vs metric units) not yet
-  reconciled (the outline path sidesteps this by using the glyph's own
-  advance); (c) only 0° orientation for embedded glyphs.
+  Raster embedded glyphs are sized and spaced from real metrics:
+  `foca.Font` carries the pattern **resolution** (FNC bytes 24-25, pels/10
+  inch) and **point size** (FND bytes 34-35), so a pattern pel maps to
+  `upi/resolution` L-units and the pen advances by each glyph's FNI
+  **character increment** (1000/em) × the em in L-units — not the bitmap
+  width. Each glyph's FNI **baseline offset** (bytes 12-13, 1000/em) drops
+  descenders (g, p, q, y) below the line. With these three fixes Sample 1's
+  body renders ~1900 real embedded TIMES-ROMAN/COURIER glyphs, readable and
+  faithful (verified by Playwright screenshot against the substitute
+  baseline).
+
+  Still open: (a) embedded raster glyphs render in black — STC/SEC text
+  color isn't applied to the 1-bit bitmaps; (b) only 0° orientation for
+  embedded glyphs.
 - FNI character-increment widths are not yet fed into document text
   fitting (render still uses position-anchored width estimation; the
   primary health-coverage sample embeds no fonts, so it cannot benefit).

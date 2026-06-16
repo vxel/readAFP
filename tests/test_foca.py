@@ -167,3 +167,20 @@ def test_describe_foca_field_decodes_metrics() -> None:
     fnps = [describe_foca_field(f) for f in fields if f.sf_id == 0xD3AC89]
     assert all(fnp.startswith("MaxAscender=") for fnp in fnps)
     assert "MaxAscender=697 MaxDescender=23" in fnps
+
+
+def test_raster_font_carries_resolution_pointsize_and_baseline() -> None:
+    # The body font records its pattern resolution (300 dpi) and nominal
+    # size (10 pt) from FNC/FND, and per-glyph baseline offsets so
+    # descenders drop below the line.
+    if not SAMPLE1.exists():
+        pytest.skip("Sample 1 not present")
+    fonts = {f.name: f for f in parse_fonts(list(iter_fields(SAMPLE1.read_bytes())))}
+    body = fonts["C0AAAB00"]
+    assert body.resolution == 300
+    assert body.point_size == 10.0
+    by_id = {g.gcgid: g for g in body.glyphs}
+    # Descenders carry a positive baseline offset; an upright letter does not.
+    assert by_id["LP010000"].baseline_offset > 0  # 'p'
+    assert by_id["LG010000"].baseline_offset > 0  # 'g'
+    assert by_id["LA010000"].baseline_offset == 0  # 'a'
