@@ -69,6 +69,7 @@ class Glyph:
     height: int
     char_increment: int  # inline advance, in the font's metric units
     png: bytes  # 1-bit grayscale PNG, dark pel on white
+    baseline_offset: int = 0  # box-bottom depth below baseline (1000/em)
 
 
 @dataclass
@@ -97,6 +98,8 @@ class Font:
     outline_format: str = ""  # detected from FNG payload, e.g. Type 1 PFB
     units_per_em: int = 0  # design-unit em for outline glyphs (0 = unknown)
     outline_glyphs: Dict[str, "type1.Glyph"] = field(default_factory=dict)
+    resolution: int = 0  # raster pattern resolution (pels/inch), from FNC
+    point_size: float = 0.0  # nominal font size (points), from FND
 
     @property
     def is_raster(self) -> bool:
@@ -157,14 +160,17 @@ def _decode_raster_glyphs(
     align = _ALIGN.get(fnc[16], 1) if len(fnc) > 16 else 1
     fni_rg = fnc[15] if len(fnc) > 15 else 28
 
-    # FNM index -> GCGID/increment, from the Font Index.
+    # FNM index -> (GCGID, increment, baseline offset), from the Font Index.
+    # The baseline offset (bytes 12-13, signed, 1000/em) is how far the
+    # glyph box bottom sits below the baseline — non-zero for descenders.
     by_pattern: Dict[int, tuple] = {}
     if fni_rg >= 18:
         for i in range(0, len(fni) - fni_rg + 1, fni_rg):
             gcgid = _decode_name(fni[i : i + 8])
             char_inc = struct.unpack(">H", fni[i + 8 : i + 10])[0]
+            baseline = struct.unpack(">h", fni[i + 12 : i + 14])[0]
             fnm_index = struct.unpack(">H", fni[i + 16 : i + 18])[0]
-            by_pattern.setdefault(fnm_index, (gcgid, char_inc))
+            by_pattern.setdefault(fnm_index, (gcgid, char_inc, baseline))
 
     glyphs: List[Glyph] = []
     count = len(fnm) // 8
@@ -178,7 +184,7 @@ def _decode_raster_glyphs(
         png = _glyph_png(pattern, box_w, box_h)
         if png is None:
             continue
-        gcgid, char_inc = by_pattern.get(idx, ("", 0))
+        gcgid, char_inc, baseline = by_pattern.get(idx, ("", 0, 0))
         glyphs.append(
             Glyph(
                 gcgid=gcgid,
@@ -186,6 +192,7 @@ def _decode_raster_glyphs(
                 height=box_h,
                 char_increment=char_inc,
                 png=png,
+                baseline_offset=baseline,
             )
         )
     return glyphs
@@ -463,6 +470,17 @@ def parse_fonts(fields: List[StructuredField]) -> List[Font]:
                                    "%s: %s", name, exc)
                 outline_format = _sniff_outline_format(fng)
                 units_per_em, outline_glyphs = _decode_outlines(fng, chars)
+            # FNC pattern resolution (bytes 24-25, pels per 10 inches) and
+            # FND nominal point size (bytes 34-35, tenths of a point) give
+            # the pel↔point↔em relationship the renderer needs.
+            resolution = (
+                struct.unpack(">H", fnc[24:26])[0] // 10
+                if len(fnc) >= 26 else 0
+            )
+            point_size = (
+                struct.unpack(">H", fnd[34:36])[0] / 10
+                if len(fnd) >= 36 else 0.0
+            )
             fonts.append(
                 Font(
                     name=name,
@@ -474,6 +492,8 @@ def parse_fonts(fields: List[StructuredField]) -> List[Font]:
                     outline_format=outline_format,
                     units_per_em=units_per_em,
                     outline_glyphs=outline_glyphs,
+                    resolution=resolution,
+                    point_size=point_size,
                 )
             )
     return fonts

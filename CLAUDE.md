@@ -27,13 +27,14 @@ src/readafp/
   foca.py      # FOCA raster-font decoder → Font / Glyph bitmaps (PNG)
   type1.py     # Adobe Type 1 (PFB) charstring interpreter → outline paths
   cff.py       # CFF / CID-keyed Type 2 charstring interpreter → outline paths
+  gcgid.py     # external code page → embedded glyph bridge (byte→GCGID)
   app.py       # Flask app (POST /inspect), create_app()
   templates/index.html   # split-pane UI
 
 tests/
   test_parser.py, test_ptoca.py, test_triplets.py,
   test_ioca.py, test_bcoca.py, test_app.py, test_foca.py, test_goca.py,
-  test_cff.py
+  test_cff.py, test_gcgid.py
 
 testdata/
   sample1_health/     # modern TrueType AFP + PDF ground truth (1 page, 306 text runs)
@@ -191,14 +192,45 @@ local-id→name indirection is not yet handled.
   by MCF local id. No corpus document uses an embedded outline font, so the
   outline path is validated against a synthetic fixture
   (`testdata/cff_document_sample.afp`, built by `make_cff_sample.py`) whose
-  glyph shapes still trace to the fontTools-validated CFF outlines. Still
-  open: (a) text whose code page is **external** (e.g. cp1140, the bulk of
-  `Sample 1.afp`) — we have the codec but not the byte→GCGID map, so it
-  stays substitute Arial and is flagged by the missing-resources panel;
-  (b) raster glyph advance uses the scaled bitmap width — the FNI metric
-  increment is in a different design unit (pattern pels vs metric units)
-  not yet reconciled (the outline path sidesteps this by using the glyph's
-  own advance); (c) only 0° orientation for embedded glyphs.
+  glyph shapes still trace to the fontTools-validated CFF outlines.
+
+  **External code pages** (e.g. cp1140, the bulk of `Sample 1.afp`) are now
+  bridged too: when the code page is *not* embedded but the character set
+  *is*, `gcgid.bridge_code_page` reconstructs byte→GCGID from the codec
+  (byte→Unicode) via an authoritative character→GCGID table for IBM
+  character set 103, transcribed from FOCA reference **Figure 56** ("EBCDIC
+  Code Page 500 With Character Set 103") — all 95 cells verified against the
+  `cp500` codec (`gcgid._CS103_CP500`). Note lowercase is `L{c}010000`,
+  uppercase `L{c}020000` (not the reverse). Outside CS103 it falls back to
+  the algorithmic `UNICxxxx`. Only font-present mappings are produced, so a
+  byte is never drawn as the wrong glyph. A run is drawn in embedded glyphs
+  only when ≥ 70 % (`_EMBED_COVERAGE_MIN`) of its bytes resolve, else the
+  whole run falls back to a substitute font — no half-bridged words. Runs
+  drawn as glyphs record their decoded text in a hidden `Page.text_layer`
+  so Copy-text / `.txt` export stays complete.
+
+  Raster embedded glyphs are sized and spaced from real metrics:
+  `foca.Font` carries the pattern **resolution** (FNC bytes 24-25, pels/10
+  inch) and **point size** (FND bytes 34-35), so a pattern pel maps to
+  `upi/resolution` L-units and the pen advances by each glyph's FNI
+  **character increment** (1000/em) × the em in L-units — not the bitmap
+  width. Each glyph's FNI **baseline offset** (bytes 12-13, 1000/em) drops
+  descenders (g, p, q, y) below the line.
+
+  **Size gate** (`_EMBED_MIN_POINT_SIZE`, 20pt): raster glyphs are 1-bit
+  bitmaps — crisp at display sizes but thin and aliased once a small body
+  font is scaled down to screen. So `_emit_embedded_glyphs` only draws them
+  for large fonts (titles/headings) and lets smaller text fall back to a
+  clean substitute font. On Sample 1 this renders the 60pt "GNU Troff"
+  title and a 28pt heading in real embedded TIMES-ROMAN, while the 10pt
+  body stays substitute — the readable hybrid (verified by Playwright
+  screenshot). Two earlier all-or-nothing attempts (rendering *all* body
+  text as bitmaps) were backed out for looking worse than substitute.
+
+  Still open: (a) embedded raster glyphs render in black — STC/SEC text
+  color isn't applied to the 1-bit bitmaps; (b) only 0° orientation for
+  embedded glyphs; (c) small embedded raster fonts could be rendered if
+  upscaled with anti-aliasing rather than nearest-neighbor.
 - FNI character-increment widths are not yet fed into document text
   fitting (render still uses position-anchored width estimation; the
   primary health-coverage sample embeds no fonts, so it cannot benefit).
