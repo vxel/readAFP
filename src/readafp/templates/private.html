@@ -35,10 +35,10 @@
       <td>2 commands</td>
     </tr>
     <tr>
-      <td>Standalone app (.exe)</td>
-      <td>No-Python desktops</td>
+      <td><a href="#exe">Standalone app (.exe)</a></td>
+      <td>No-Python Windows PCs</td>
       <td>Stay on your PC</td>
-      <td><em>coming soon</em></td>
+      <td>1 download</td>
     </tr>
     <tr>
       <td>In-browser, no upload</td>
@@ -70,16 +70,23 @@ docker run -p 8770:8770 readafp</code></pre>
   <p>Then open <code>http://localhost:8770</code> (or share the host's internal
   address with your team).</p>
 
-  <h2>More ways, coming</h2>
-  <ul>
-    <li><strong>Standalone Windows app (.exe)</strong> — double-click to run,
-    no Python needed; your files stay on your PC.</li>
-    <li><strong>In your browser, with no upload</strong> — a version that parses
-    the file right in your browser (via WebAssembly), so the file never leaves
-    the page at all. This is in progress.</li>
-  </ul>
-  <p>Want one of these sooner, or need help getting set up? The project is on
-  <a href="https://github.com/bone1966/readAFP">GitHub</a> — open an issue.</p>
+  <h2 id="exe">3. Standalone Windows app (.exe)</h2>
+  <p>No Python, no setup —
+  <a href="https://github.com/bone1966/readAFP/releases/latest">download
+  <code>readAFP.exe</code></a> from GitHub Releases, double-click it, and
+  readAFP opens in your browser. Your files stay on your PC.</p>
+  <p>Because the app is free and unsigned, Windows SmartScreen may warn
+  <em>"Windows protected your PC"</em> the first time — click
+  <strong>More info → Run anyway</strong>. (Some locked-down corporate PCs
+  block unsigned apps entirely; if so, use the source or Docker option above.)</p>
+
+  <h2>Coming: in your browser, with no upload</h2>
+  <p>A version that parses the file right in your browser (via WebAssembly),
+  so it never leaves the page — zero install, nothing to run. In progress.</p>
+
+  <p>Need help getting set up, or want the in-browser version sooner? The
+  project is on <a href="https://github.com/bone1966/readAFP">GitHub</a> —
+  open an issue.</p>
 
   <a class="cta" href="/">Files <em>not</em> sensitive? <strong>Just use it here →</strong></a>
 {% endblock %}

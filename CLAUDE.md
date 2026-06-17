@@ -36,6 +36,8 @@ src/readafp/
   static/favicon.svg, og.png   # favicon + social-share card
 
 Dockerfile / .dockerignore   # self-host: docker build/run → localhost:8770
+desktop.py   # standalone-.exe entry point (waitress + opens browser, local-only)
+.github/workflows/release.yml  # builds readAFP.exe on a v* tag → GitHub Release
 
 tests/
   test_parser.py, test_ptoca.py, test_triplets.py,

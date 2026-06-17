@@ -1,0 +1,54 @@
+name: Build desktop .exe
+
+# Builds the standalone Windows executable on a clean runner and attaches it
+# to the GitHub Release. Trigger by pushing a version tag (e.g. v1.0.0), or
+# run manually from the Actions tab.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller waitress
+
+      - name: Build readAFP.exe
+        shell: bash
+        run: |
+          pyinstaller --onefile --name readAFP --paths src \
+            --add-data "src/readafp/templates;readafp/templates" \
+            --add-data "src/readafp/static;readafp/static" \
+            --add-data "src/readafp/samples;readafp/samples" \
+            --collect-all segno \
+            --noconfirm desktop.py
+
+      - name: Upload to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/readAFP.exe
+          body: |
+            Standalone Windows build of readAFP — double-click to run it
+            locally; your AFP files never leave your computer.
+
+            It's unsigned, so Windows SmartScreen may show
+            "Windows protected your PC" — click **More info → Run anyway**.
+
+      - name: Upload as a workflow artifact (for manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: readAFP-exe
+          path: dist/readAFP.exe
