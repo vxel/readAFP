@@ -1,0 +1,36 @@
+{% extends "guide_base.html" %}
+{% block title %}{{ guide.title }} — readAFP{% endblock %}
+{% block description %}{{ guide.description }}{% endblock %}
+{% block canonical %}/guide/{{ guide.slug }}{% endblock %}
+{% block jsonld %}
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": {{ guide.title | tojson }},
+    "description": {{ guide.description | tojson }},
+    "mainEntityOfPage": "https://readafp.com/guide/{{ guide.slug }}",
+    "image": "https://readafp.com/static/og.png",
+    "author": { "@type": "Person", "name": "Keith Lutz" },
+    "publisher": { "@type": "Organization", "name": "readAFP" }
+  }
+  </script>
+{% endblock %}
+{% block content %}
+  <div class="crumbs"><a href="/">Home</a> › <a href="/guide">Guides</a> › {{ guide.title }}</div>
+  <article>
+    <h1>{{ guide.title }}</h1>
+    {{ guide.body | safe }}
+  </article>
+  <a class="cta" href="/">Open your AFP file <strong>free, in your browser →</strong></a>
+  {% if related %}
+  <div class="related">
+    <h2>Related guides</h2>
+    <ul>
+      {% for r in related %}
+      <li><a href="/guide/{{ r.slug }}">{{ r.title }}</a></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+{% endblock %}

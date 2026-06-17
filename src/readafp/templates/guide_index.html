@@ -1,0 +1,19 @@
+{% extends "guide_base.html" %}
+{% block title %}AFP & MO:DCA Guides — readAFP{% endblock %}
+{% block description %}Plain-English guides to AFP and MO:DCA files: what they are, how to open them, AFP vs PDF, and the object types inside (PTOCA, IOCA, BCOCA, GOCA, FOCA).{% endblock %}
+{% block canonical %}/guide{% endblock %}
+{% block content %}
+  <div class="crumbs"><a href="/">Home</a> › Guides</div>
+  <h1>AFP &amp; MO:DCA Guides</h1>
+  <p>Short, practical articles on Advanced Function Presentation (AFP) and the
+  MO:DCA data stream — what these files are, how to open them, and what's inside.</p>
+  <ul class="card-list">
+    {% for g in guides %}
+    <li>
+      <h2><a href="/guide/{{ g.slug }}">{{ g.title }}</a></h2>
+      <p>{{ g.description }}</p>
+    </li>
+    {% endfor %}
+  </ul>
+  <a class="cta" href="/">Have an AFP file? <strong>Open it free in your browser →</strong></a>
+{% endblock %}
