@@ -2,11 +2,20 @@
 
 import logging
 import platform
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
 
 from flask import Flask, Response, abort, render_template, request
+
+# Package directory for templates/static/samples. When frozen by PyInstaller
+# (the desktop .exe) the package data is unpacked under sys._MEIPASS, so
+# resolve against that; otherwise it's the directory of this module.
+if getattr(sys, "frozen", False):
+    _PKG_DIR = Path(getattr(sys, "_MEIPASS", ".")) / "readafp"
+else:
+    _PKG_DIR = Path(__file__).parent
 
 from readafp import __version__
 from readafp.foca import _decode_name, describe_foca_field
@@ -53,7 +62,7 @@ CODEPAGES = [
     ("cp1141", "cp1141 — Germany (euro)"),
 ]
 
-_SAMPLES_DIR = Path(__file__).parent / "samples"
+_SAMPLES_DIR = _PKG_DIR / "samples"
 
 # Bundled sample files shown on the landing page.
 SAMPLES = [
@@ -128,7 +137,14 @@ SAMPLES = [
 
 def create_app() -> Flask:
     """Build the Flask application."""
-    app = Flask(__name__)
+    if getattr(sys, "frozen", False):  # desktop .exe: data is under _MEIPASS
+        app = Flask(
+            __name__,
+            template_folder=str(_PKG_DIR / "templates"),
+            static_folder=str(_PKG_DIR / "static"),
+        )
+    else:
+        app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
     @app.context_processor
