@@ -56,3 +56,16 @@ def test_sitemap_includes_guides() -> None:
 def test_home_links_to_guides() -> None:
     html = _client().get("/").get_data(as_text=True)
     assert 'href="/guide"' in html
+
+
+def test_private_page_offers_no_upload_options() -> None:
+    html = _client().get("/private").get_data(as_text=True)
+    assert "git clone https://github.com/bone1966/readAFP" in html  # run local
+    assert "docker build -t readafp" in html  # self-host
+    assert 'href="https://readafp.com/private"' in html  # canonical
+
+
+def test_home_and_sitemap_link_private() -> None:
+    assert 'href="/private"' in _client().get("/").get_data(as_text=True)
+    assert "https://readafp.com/private" in (
+        _client().get("/sitemap.xml").get_data(as_text=True))

@@ -155,6 +155,11 @@ def create_app() -> Flask:
         """Liveness probe for uptime monitors (returns 200 + JSON)."""
         return {"status": "ok", "version": __version__}, 200
 
+    @app.get("/private")
+    def private() -> str:
+        """Ways to run readAFP without uploading files (DLP / offline)."""
+        return render_template("private.html")
+
     @app.get("/guide")
     def guide_index() -> str:
         """List the SEO guide articles."""
@@ -183,7 +188,8 @@ def create_app() -> Flask:
     @app.get("/sitemap.xml")
     def sitemap() -> Response:
         """Sitemap of indexable pages (home, guides) for search engines."""
-        urls = ["https://readafp.com/", "https://readafp.com/guide"]
+        urls = ["https://readafp.com/", "https://readafp.com/private",
+                "https://readafp.com/guide"]
         urls += [f"https://readafp.com/guide/{g.slug}" for g in GUIDES]
         items = "".join(f"  <url><loc>{u}</loc></url>\n" for u in urls)
         xml = (
