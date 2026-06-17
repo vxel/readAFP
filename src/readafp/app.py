@@ -10,6 +10,7 @@ from flask import Flask, Response, abort, render_template, request
 
 from readafp import __version__
 from readafp.foca import _decode_name, describe_foca_field
+from readafp.guides import GUIDES, GUIDES_BY_SLUG
 from readafp.parser import AfpParseError, StructuredField, iter_fields
 from readafp.ptoca import (
     extract_pages,
@@ -154,6 +155,21 @@ def create_app() -> Flask:
         """Liveness probe for uptime monitors (returns 200 + JSON)."""
         return {"status": "ok", "version": __version__}, 200
 
+    @app.get("/guide")
+    def guide_index() -> str:
+        """List the SEO guide articles."""
+        return render_template("guide_index.html", guides=GUIDES)
+
+    @app.get("/guide/<slug>")
+    def guide(slug: str) -> str:
+        """Render a single guide article, or 404."""
+        article = GUIDES_BY_SLUG.get(slug)
+        if article is None:
+            abort(404)
+        related = [GUIDES_BY_SLUG[s] for s in article.related
+                   if s in GUIDES_BY_SLUG]
+        return render_template("guide.html", guide=article, related=related)
+
     @app.get("/robots.txt")
     def robots() -> Response:
         """Allow crawling and point search engines at the sitemap."""
@@ -166,8 +182,9 @@ def create_app() -> Flask:
 
     @app.get("/sitemap.xml")
     def sitemap() -> Response:
-        """Minimal sitemap of indexable pages for search engines."""
-        urls = ["https://readafp.com/"]
+        """Sitemap of indexable pages (home, guides) for search engines."""
+        urls = ["https://readafp.com/", "https://readafp.com/guide"]
+        urls += [f"https://readafp.com/guide/{g.slug}" for g in GUIDES]
         items = "".join(f"  <url><loc>{u}</loc></url>\n" for u in urls)
         xml = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'

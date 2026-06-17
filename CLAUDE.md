@@ -28,8 +28,11 @@ src/readafp/
   type1.py     # Adobe Type 1 (PFB) charstring interpreter → outline paths
   cff.py       # CFF / CID-keyed Type 2 charstring interpreter → outline paths
   gcgid.py     # external code page → embedded glyph bridge (byte→GCGID)
+  guides.py    # hand-written SEO articles served at /guide/<slug>
   app.py       # Flask app (POST /inspect), create_app()
   templates/index.html   # split-pane UI
+  templates/guide_base.html, guide_index.html, guide.html  # SEO guide pages
+  static/favicon.svg, og.png   # favicon + social-share card
 
 tests/
   test_parser.py, test_ptoca.py, test_triplets.py,
