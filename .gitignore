@@ -11,3 +11,6 @@ venv/
 .idea/
 Thumbs.db
 .DS_Store
+
+# Private launch/marketing notes (not for the public repo)
+LAUNCH.md
