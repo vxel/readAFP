@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
 
-from flask import Flask, abort, render_template, request
+from flask import Flask, Response, abort, render_template, request
 
 from readafp import __version__
 from readafp.foca import _decode_name, describe_foca_field
@@ -153,6 +153,29 @@ def create_app() -> Flask:
     def healthz() -> tuple:
         """Liveness probe for uptime monitors (returns 200 + JSON)."""
         return {"status": "ok", "version": __version__}, 200
+
+    @app.get("/robots.txt")
+    def robots() -> Response:
+        """Allow crawling and point search engines at the sitemap."""
+        body = (
+            "User-agent: *\n"
+            "Allow: /\n"
+            "Sitemap: https://readafp.com/sitemap.xml\n"
+        )
+        return Response(body, mimetype="text/plain")
+
+    @app.get("/sitemap.xml")
+    def sitemap() -> Response:
+        """Minimal sitemap of indexable pages for search engines."""
+        urls = ["https://readafp.com/"]
+        items = "".join(f"  <url><loc>{u}</loc></url>\n" for u in urls)
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            f"{items}"
+            "</urlset>\n"
+        )
+        return Response(xml, mimetype="application/xml")
 
     @app.post("/inspect")
     def inspect() -> str:
