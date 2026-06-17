@@ -48,6 +48,11 @@
     th { background: var(--card); color: var(--text); }
     code { background: var(--card); padding: 1px 6px; border-radius: 5px;
            font-size: 0.9em; color: #aee9f2; }
+    pre { background: var(--card); border: 1px solid var(--border);
+          border-radius: 10px; padding: 14px 16px; overflow-x: auto;
+          margin: 14px 0; }
+    pre code { background: none; padding: 0; color: #d7dbef;
+               font-size: 0.88rem; line-height: 1.5; }
     .cta {
       display: block; margin: 30px 0; padding: 18px 22px; border-radius: 12px;
       background: linear-gradient(120deg, #1a3d44, #1a1d29);
@@ -74,7 +79,7 @@
   <header class="site">
     <a class="brand" href="/">readAFP 🔍</a><span class="beta">Beta</span>
     <span class="spacer"></span>
-    <nav><a href="/">Open a file</a><a href="/guide">Guides</a></nav>
+    <nav><a href="/">Open a file</a><a href="/private">Run privately</a><a href="/guide">Guides</a></nav>
   </header>
   <main>
     {% block content %}{% endblock %}

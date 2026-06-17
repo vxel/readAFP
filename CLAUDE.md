@@ -32,7 +32,10 @@ src/readafp/
   app.py       # Flask app (POST /inspect), create_app()
   templates/index.html   # split-pane UI
   templates/guide_base.html, guide_index.html, guide.html  # SEO guide pages
+  templates/private.html   # "run without uploading" (DLP/offline) options page
   static/favicon.svg, og.png   # favicon + social-share card
+
+Dockerfile / .dockerignore   # self-host: docker build/run → localhost:8770
 
 tests/
   test_parser.py, test_ptoca.py, test_triplets.py,

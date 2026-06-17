@@ -1,0 +1,13 @@
+.git
+testdata
+tests
+tools
+docs
+*.md
+__pycache__
+*.pyc
+.venv
+AFPexplorer*
+AFPviewer*
+*.zip
+*.jpg
