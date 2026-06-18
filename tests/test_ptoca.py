@@ -506,7 +506,8 @@ def test_decode_trn_strips_undecodable_control_chars() -> None:
     assert _strip_controls("a\x1ab\x00c\x9fd") == "abcd"
     assert _strip_controls("keep\ttab\nand space") == "keep\ttab\nand space"
     assert _strip_controls("plain text") == "plain text"
-    assert _decode_trn(b"\x3f", "cp500") == ""  # the FOP bullet byte
+    # FOP encodes its list bullet at X'3F' (cp500 -> U+001A); render as "•".
+    assert _decode_trn(b"\x3f", "cp500") == "•"
 
 
 def test_fit_scales_glyphs_not_gaps() -> None:
