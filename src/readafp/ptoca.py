@@ -298,6 +298,23 @@ def _substitute_font(typeface: str) -> Optional[Tuple[str, str]]:
     return None
 
 
+# IBM / Apache FOP coded-font & character-set names encode the typeface in
+# the 3rd character (e.g. C0H200B0 = Helvetica, C04200B0 = Courier,
+# C0N200B0 = Times New Roman). When a font is *external* (not embedded and
+# no MDR), this name is the only clue to whether it's serif/sans/mono.
+_CODED_FONT_TYPEFACE = {
+    "H": "HELVETICA", "4": "COURIER", "N": "TIMES", "T": "TIMES",
+    "S": "TIMES", "5": "TIMES",
+}
+
+
+def _coded_font_substitute(name: str) -> Optional[Tuple[str, str]]:
+    """Infer a substitute font from an IBM/FOP coded-font name, or None."""
+    if len(name) >= 3 and name[:2] == "C0":
+        return _substitute_font(_CODED_FONT_TYPEFACE.get(name[2], ""))
+    return None
+
+
 def parse_mdr_fonts(data: bytes) -> Dict[int, FontInfo]:
     """Extract font name/size per local id from an MDR (Map Data Resource).
 
@@ -513,8 +530,12 @@ class _TextState:
             return
         length = _s16(p)
         thickness = _s16(p, 2) if len(p) >= 4 else 20
-        if abs(thickness) < 10:  # keep hairlines visible once scaled
-            thickness = 10 if thickness >= 0 else -10
+        # Keep hairlines visible once scaled, but the floor must track the
+        # page resolution: a fixed 10 is ~0.5pt at 1440/inch (fine) yet 3pt
+        # at FOP's 240/inch (6x too thick). upi//144 ≈ a 0.5pt minimum.
+        min_thick = max(1, page.units_per_inch // 144)
+        if 0 < abs(thickness) < min_thick:
+            thickness = min_thick if thickness >= 0 else -min_thick
         page.rules.append(
             Rule(
                 x=self.i,
@@ -1171,9 +1192,11 @@ def extract_pages(
                         outline_glyphs=outline_glyphs, units_per_em=em,
                         codec=codec,
                     )
-                # Choose a substitute font from the char set's typeface
-                # (MDR, if present, already set a better one).
-                sub = _substitute_font(char_set_typefaces.get(cs_name or "", ""))
+                # Choose a substitute font: prefer the embedded char set's
+                # typeface, else infer from the coded-font name (external
+                # fonts). MDR, if present, already set a better one.
+                sub = (_substitute_font(char_set_typefaces.get(cs_name or "", ""))
+                       or _coded_font_substitute(cs_name or ""))
                 if sub and lid not in fonts:
                     fonts[lid] = FontInfo(family=sub[0], weight=sub[1])
         elif f.sf_id == 0xD3A6AF and len(f.data) >= 12:  # PGD

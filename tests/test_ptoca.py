@@ -518,3 +518,36 @@ def test_fit_scales_glyphs_not_gaps() -> None:
             TextRun(x=240, y=100, text=".", font_size=40)]
     out = _fit(runs, 0)
     assert "spacingAndGlyphs" in out and "textLength" in out
+
+
+def test_coded_font_name_infers_typeface() -> None:
+    # IBM/FOP coded-font names: C0H=Helvetica, C04=Courier, C0N=Times.
+    from readafp.ptoca import _coded_font_substitute
+    assert _coded_font_substitute("C04200B0")[0].startswith("Courier")
+    assert _coded_font_substitute("C0N200B0")[0].startswith("Times")
+    assert _coded_font_substitute("C0H200B0")[0].startswith("Arial")
+    assert _coded_font_substitute("ZZZ") is None
+
+
+def test_rule_thickness_floor_tracks_resolution() -> None:
+    # FOP underlines are 1-2 L-units at 240/inch and must stay thin, not be
+    # clamped up to the old fixed 10 (which was ~6x too thick there).
+    from readafp.parser import iter_fields
+    from readafp import ptoca
+    afp = TESTDATA / "fop-pairs" / "textdeko.afp"
+    if not afp.exists():
+        pytest.skip("fop-pairs not present")
+    page = ptoca.extract_pages(list(iter_fields(afp.read_bytes())))[0]
+    underlines = [abs(r.thickness) for r in page.rules if abs(r.thickness) < 50]
+    assert underlines and max(underlines) <= 2  # thin, not clamped to 10
+
+
+def test_fop_inline_runs_use_monospace() -> None:
+    from readafp.parser import iter_fields
+    from readafp import ptoca
+    afp = TESTDATA / "fop-pairs" / "textdeko.afp"
+    if not afp.exists():
+        pytest.skip("fop-pairs not present")
+    page = ptoca.extract_pages(list(iter_fields(afp.read_bytes())))[0]
+    inline = [r for r in page.texts if "fo:inline" in r.text]
+    assert inline and all("monospace" in r.font_family for r in inline)
