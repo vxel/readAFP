@@ -247,9 +247,28 @@ def _decode_trn(params: bytes, codepage: str = "cp500") -> str:
             except UnicodeDecodeError:
                 pass
     try:
-        return params.decode(codepage)
+        text = params.decode(codepage)
     except (UnicodeDecodeError, LookupError):
-        return params.decode("cp500", errors="replace")
+        text = params.decode("cp500", errors="replace")
+    return _strip_controls(text)
+
+
+def _strip_controls(text: str) -> str:
+    """Drop C0/C1 control characters (keep tab/newline/CR and space).
+
+    A byte that the active code page can't map to a real glyph often decodes
+    to a control character (e.g. a producer's symbol code point our generic
+    EBCDIC codec doesn't know — FOP encodes its list bullet at X'3F', which
+    cp500 yields as U+001A). Rendering that as a tofu box □ misrepresents the
+    page, so we omit it rather than fabricate a glyph we can't confirm.
+    """
+    if not any(ch < " " and ch not in "\t\n\r" or "\x7f" <= ch <= "\x9f"
+               for ch in text):
+        return text
+    return "".join(
+        ch for ch in text
+        if ch in "\t\n\r" or (ch >= " " and not "\x7f" <= ch <= "\x9f")
+    )
 
 
 def _u16(b: bytes, off: int = 0) -> int:

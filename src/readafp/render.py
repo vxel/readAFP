@@ -88,7 +88,10 @@ def _fit(texts, i) -> str:
     est = len(run.text) * 0.52 * run.font_size
     if est <= 0 or not 0.7 <= avail / est <= 1.4:
         return ""
-    return f' textLength="{avail}" lengthAdjust="spacing"'
+    # spacingAndGlyphs scales the glyph shapes to the AFP-implied width, so a
+    # narrower substitute font reads as a slightly wider face rather than
+    # letters spread apart by extra gaps (which "spacing" alone produced).
+    return f' textLength="{avail}" lengthAdjust="spacingAndGlyphs"'
 
 
 def _vector_graphic_markup(vg: VectorGraphic) -> str:

@@ -109,8 +109,13 @@ Page(width, height, units_per_inch, texts, rules, images, truncated)
   monospace, TIMES → serif, HELVETICA → sans), else Arial — so even when
   a char set's glyphs can't be drawn (external code page) its real metrics
   are approximated, which also curbs over-stretching. `textLength` +
-  `lengthAdjust="spacing"` stretches a run to the AFP-implied width from
-  the next run's position (`_fit()`), ratio-guarded against distortion.
+  `lengthAdjust="spacingAndGlyphs"` stretches a run to the AFP-implied width
+  from the next run's position (`_fit()`), ratio-guarded against distortion —
+  scaling glyph shapes (reads as a wider face) rather than adding gaps between
+  letters (which "spacing" alone did, spreading text apart on FOP pairs).
+  Undecodable control chars (a code page's symbol code points the generic
+  EBCDIC codec can't map — e.g. FOP's bullet at X'3F') are stripped by
+  `_strip_controls` rather than rendered as tofu boxes.
 - Images: `<image>` with base64 data URI. CMYK planes use `<filter>` + `mix-blend-mode: multiply`. Bilevel/barcode: `image-rendering: pixelated` (`crisp=True`).
 
 ## In-browser mode (Pyodide / WASM)
