@@ -250,6 +250,11 @@ def _decode_trn(params: bytes, codepage: str = "cp500") -> str:
         text = params.decode(codepage)
     except (UnicodeDecodeError, LookupError):
         text = params.decode("cp500", errors="replace")
+    # Apache FOP encodes its list bullet at EBCDIC X'3F' (the only byte that
+    # cp500-family codecs map to U+001A, an undefined control never used for
+    # real text). FOP's own AFP+PDF output confirms X'3F' ↔ "•", so render it
+    # as a bullet rather than dropping it as a control.
+    text = text.replace("\x1a", "•")
     return _strip_controls(text)
 
 
