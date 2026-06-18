@@ -9,18 +9,30 @@
   <p>Many organizations block uploading internal documents to outside
   websites — that's <strong>data-loss prevention (DLP)</strong>, and it's the
   right call: your AFP files often hold customer data (statements, invoices,
-  letters). So if readafp.com won't let you upload a file at work, that's your
-  company's policy, not a bug.</p>
+  letters).</p>
 
-  <p>The fix is to run readAFP <strong>where your files already live</strong> —
-  on your own machine or inside your network — so nothing is ever sent out.
-  Every option below keeps your AFP files <strong>local</strong>. Good news:
-  most companies allow access to GitHub, so you can get the code even when
-  uploads are blocked.</p>
+  <p><strong>Good news — readafp.com already handles this.</strong> When you
+  open your own file on the site, it's parsed <strong>right in your browser</strong>
+  (via WebAssembly); the file is <strong>never uploaded</strong> and never
+  leaves your computer. So in most cases you can just use the site normally,
+  even where uploads are blocked — there's nothing to send, so there's nothing
+  for DLP to stop.</p>
+
+  <p>The only catch: the in-browser engine loads its code from a public CDN
+  the first time. If your network blocks <em>that</em> too, use one of the
+  fully self-contained options below — all of them keep your files
+  <strong>local</strong>, and most companies allow GitHub so you can get the
+  code even when other things are blocked.</p>
 
   <table>
     <tr>
       <th>Option</th><th>Best for</th><th>Your files</th><th>Setup</th>
+    </tr>
+    <tr>
+      <td><strong>In your browser</strong> (just use <a href="/">readafp.com</a>)</td>
+      <td>Almost everyone</td>
+      <td>Never leave the page</td>
+      <td><strong>nothing — it's the default</strong></td>
     </tr>
     <tr>
       <td><a href="#source">Run from source</a></td>
@@ -39,12 +51,6 @@
       <td>No-Python Windows PCs</td>
       <td>Stay on your PC</td>
       <td>1 download</td>
-    </tr>
-    <tr>
-      <td>In-browser, no upload</td>
-      <td>Zero install, locked-down PCs</td>
-      <td>Never leave the page</td>
-      <td><em>in progress</em></td>
     </tr>
   </table>
 
@@ -80,13 +86,8 @@ docker run -p 8770:8770 readafp</code></pre>
   <strong>More info → Run anyway</strong>. (Some locked-down corporate PCs
   block unsigned apps entirely; if so, use the source or Docker option above.)</p>
 
-  <h2>Coming: in your browser, with no upload</h2>
-  <p>A version that parses the file right in your browser (via WebAssembly),
-  so it never leaves the page — zero install, nothing to run. In progress.</p>
-
-  <p>Need help getting set up, or want the in-browser version sooner? The
-  project is on <a href="https://github.com/bone1966/readAFP">GitHub</a> —
-  open an issue.</p>
+  <p>Need help getting set up? The project is on
+  <a href="https://github.com/bone1966/readAFP">GitHub</a> — open an issue.</p>
 
   <a class="cta" href="/">Files <em>not</em> sensitive? <strong>Just use it here →</strong></a>
 {% endblock %}

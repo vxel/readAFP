@@ -249,3 +249,33 @@ def test_inspect_endpoint_rejects_non_afp() -> None:
         content_type="multipart/form-data",
     )
     assert b"Not a valid AFP file" in response.data
+
+
+def test_build_context_is_flask_free_and_complete() -> None:
+    # build_context drives both the server and the in-browser (Pyodide) render.
+    from readafp.app import build_context
+    data = HEALTH_SAMPLE.read_bytes()
+    ctx = build_context(data, "health.afp", "cp500")
+    for key in ("fields", "page_svgs", "summary", "codepages", "codepage",
+                "samples", "mcf_note", "missing_resources", "page_total"):
+        assert key in ctx, key
+    assert ctx["fields"] and ctx["page_svgs"]
+    # bad bytes -> error context, not an exception
+    bad = build_context(b"not afp", "x.afp", "cp500")
+    assert bad["fields"] is None and bad["error"]
+
+
+def test_pyodide_zip_route_serves_importable_package() -> None:
+    import io
+    import zipfile
+    c = create_app().test_client()
+    r = c.get("/pyodide/readafp.zip")
+    assert r.status_code == 200 and r.mimetype == "application/zip"
+    names = zipfile.ZipFile(io.BytesIO(r.data)).namelist()
+    assert "readafp/app.py" in names
+    assert "readafp/templates/index.html" in names
+
+
+def test_index_loads_inbrowser_script() -> None:
+    html = create_app().test_client().get("/").get_data(as_text=True)
+    assert "inbrowser.js" in html
