@@ -34,6 +34,7 @@ src/readafp/
   templates/guide_base.html, guide_index.html, guide.html  # SEO guide pages
   templates/private.html   # "run without uploading" (DLP/offline) options page
   static/favicon.svg, og.png   # favicon + social-share card
+  static/inbrowser.js   # in-browser mode: parse via Pyodide/WASM, no upload
 
 Dockerfile / .dockerignore   # self-host: docker build/run → localhost:8770
 desktop.py   # standalone-.exe entry point (waitress + opens browser, local-only)
@@ -111,6 +112,23 @@ Page(width, height, units_per_inch, texts, rules, images, truncated)
   `lengthAdjust="spacing"` stretches a run to the AFP-implied width from
   the next run's position (`_fit()`), ratio-guarded against distortion.
 - Images: `<image>` with base64 data URI. CMYK planes use `<filter>` + `mix-blend-mode: multiply`. Bilevel/barcode: `image-rendering: pixelated` (`crisp=True`).
+
+## In-browser mode (Pyodide / WASM)
+
+`static/inbrowser.js` intercepts the upload form and parses the file **in the
+browser** so it is never uploaded (privacy / DLP-safe) — the default for
+user uploads (sample cards stay server-side/instant). It loads Pyodide from a
+CDN, `micropip` installs segno + jinja2, fetches `/pyodide/readafp.zip` (the
+readafp source + templates, zipped by `app._readafp_zip_bytes`), unpacks it,
+then runs `app.build_context()` + Jinja to render `index.html` and replaces
+the page. To make this possible, **Flask is imported lazily inside
+`create_app()`** (not at module top) so `readafp.app` imports cleanly under
+Pyodide, and `build_context(data, filename, codepage) -> dict` is the pure,
+Flask-free orchestration shared by the server routes and the client. On
+engine-load failure it falls back to a normal server submit. Validated
+end-to-end in a real browser (Playwright): renders correctly with zero POST.
+v1 limitation: it `document.write`s the full page, so opening another file
+reloads Pyodide — a future fragment-injection version would keep it warm.
 
 ## Rendering Fidelity Principle
 

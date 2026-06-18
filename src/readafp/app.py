@@ -7,7 +7,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
 
-from flask import Flask, Response, abort, render_template, request
+# Flask is imported lazily inside create_app(), not at module top, so that
+# readafp.app can be imported in a Flask-free environment — notably Pyodide
+# (WebAssembly), where the in-browser build runs build_context() with no
+# server. Everything at module level here is pure Python.
 
 # Package directory for templates/static/samples. When frozen by PyInstaller
 # (the desktop .exe) the package data is unpacked under sys._MEIPASS, so
@@ -135,8 +138,10 @@ SAMPLES = [
 ]
 
 
-def create_app() -> Flask:
+def create_app():
     """Build the Flask application."""
+    from flask import Flask, Response, abort, render_template, request
+
     if getattr(sys, "frozen", False):  # desktop .exe: data is under _MEIPASS
         app = Flask(
             __name__,
@@ -231,35 +236,75 @@ def create_app() -> Flask:
                 codepage=codepage,
                 samples=SAMPLES,
             )
-        data = upload.read()
-        return _render_inspect(data, upload.filename, codepage)
+        ctx = build_context(upload.read(), upload.filename, codepage)
+        return render_template("index.html", **ctx)
 
     @app.get("/inspect-sample/<name>")
     def inspect_sample(name: str) -> str:
         sample = next((s for s in SAMPLES if s["name"] == name), None)
         if sample is None:
             abort(404)
-        path = _SAMPLES_DIR / sample["file"]
-        data = path.read_bytes()
-        return _render_inspect(data, sample["file"], "cp500")
+        data = (_SAMPLES_DIR / sample["file"]).read_bytes()
+        return render_template(
+            "index.html", **build_context(data, sample["file"], "cp500"))
+
+    @app.get("/pyodide/readafp.zip")
+    def pyodide_pkg() -> Response:
+        """The readafp package (source + templates), zipped for the
+        in-browser Pyodide build to unpack and import. Built once, cached."""
+        return Response(_readafp_zip_bytes(), mimetype="application/zip")
 
     return app
 
 
-def _render_inspect(data: bytes, filename: str, codepage: str) -> str:
-    """Parse AFP bytes and render the full inspect/render template."""
+_READAFP_ZIP: bytes = b""
+
+
+def _readafp_zip_bytes() -> bytes:
+    """Zip the readafp .py modules + templates with a ``readafp/`` prefix.
+
+    Cached after first build. The in-browser client fetches this, unpacks it
+    into Pyodide's filesystem, and imports readafp — so the same parser and
+    template render the file locally, with nothing uploaded.
+    """
+    global _READAFP_ZIP
+    if _READAFP_ZIP:
+        return _READAFP_ZIP
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for path in sorted(_PKG_DIR.rglob("*")):
+            if (path.is_file() and path.suffix in (".py", ".html")
+                    and "__pycache__" not in path.parts):
+                arc = "readafp/" + path.relative_to(_PKG_DIR).as_posix()
+                z.write(path, arc)
+    _READAFP_ZIP = buf.getvalue()
+    return _READAFP_ZIP
+
+
+def _safe_codepage(codepage: str) -> str:
+    return codepage if codepage in {n for n, _ in CODEPAGES} else "cp500"
+
+
+def build_context(data: bytes, filename: str, codepage: str) -> Dict[str, Any]:
+    """Parse AFP bytes into the full template context (Flask-free).
+
+    Returns the dict of template variables for index.html — used by the
+    server routes (via render_template) and by the in-browser Pyodide build
+    (which renders the same template client-side). No Flask, no I/O.
+    """
+    codepage = _safe_codepage(codepage)
+    base: Dict[str, Any] = {
+        "codepages": CODEPAGES, "codepage": codepage, "samples": SAMPLES,
+    }
     try:
         parsed = list(iter_fields(data))
     except AfpParseError as exc:
         logger.warning("Failed to parse %s: %s", filename, exc)
-        return render_template(
-            "index.html",
-            fields=None,
-            error=f"Not a valid AFP file: {exc}",
-            codepages=CODEPAGES,
-            codepage=codepage,
-            samples=SAMPLES,
-        )
+        return {**base, "fields": None,
+                "error": f"Not a valid AFP file: {exc}"}
     fields = _field_rows(parsed)
     summary = Counter(row["name"] for row in fields)
     pages = extract_pages(parsed, codepage)
@@ -274,23 +319,20 @@ def _render_inspect(data: bytes, filename: str, codepage: str) -> str:
             if row["page"] is None and row["sf_id"] == "0xD3EE9B":
                 row["page"] = src_to_page.get(row["offset"])
     page_svgs = pages_to_svgs(pages, MAX_RENDER_PAGES)
-    return render_template(
-        "index.html",
-        fields=fields,
-        error=None,
-        filename=filename,
-        filesize=len(data),
-        summary=summary.most_common(),
-        page_svgs=page_svgs,
-        page_texts=[p.plain_text for p in pages[: len(page_svgs)]],
-        page_total=len(pages),
-        codepages=CODEPAGES,
-        codepage=codepage,
-        mcf_note=_mcf_codepage_note(parsed),
-        resource_kind=_resource_kind(parsed),
-        missing_resources=_missing_resources(parsed),
-        samples=SAMPLES,
-    )
+    return {
+        **base,
+        "fields": fields,
+        "error": None,
+        "filename": filename,
+        "filesize": len(data),
+        "summary": summary.most_common(),
+        "page_svgs": page_svgs,
+        "page_texts": [p.plain_text for p in pages[: len(page_svgs)]],
+        "page_total": len(pages),
+        "mcf_note": _mcf_codepage_note(parsed),
+        "resource_kind": _resource_kind(parsed),
+        "missing_resources": _missing_resources(parsed),
+    }
 
 
 # Begin-fields that mark a stream as a stand-alone AFP *resource* rather
