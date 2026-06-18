@@ -537,8 +537,9 @@ class _TextState:
         thickness = _s16(p, 2) if len(p) >= 4 else 20
         # Keep hairlines visible once scaled, but the floor must track the
         # page resolution: a fixed 10 is ~0.5pt at 1440/inch (fine) yet 3pt
-        # at FOP's 240/inch (6x too thick). upi//144 ≈ a 0.5pt minimum.
-        min_thick = max(1, page.units_per_inch // 144)
+        # at FOP's 240/inch (6x too thick). Round upi/144 to a ~0.5pt floor —
+        # 2 units at 240/inch (solid, not faint) and 10 at 1440 (unchanged).
+        min_thick = max(1, round(page.units_per_inch / 144))
         if 0 < abs(thickness) < min_thick:
             thickness = min_thick if thickness >= 0 else -min_thick
         page.rules.append(
