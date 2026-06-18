@@ -103,10 +103,15 @@ Page(width, height, units_per_inch, texts, rules, images, truncated)
 ## SVG Rendering (render.py)
 
 - `page_to_svg(page)` — builds SVG; viewBox in L-units.
-- Rules: `<rect>` extending in +I (right) or +B (down) direction from position.
+- Rules: `<rect>` extending in +I (right) or +B (down) direction from
+  position. The hairline-visibility thickness floor is resolution-relative
+  (`upi//144`, ~0.5pt) — a fixed floor was 6x too thick at FOP's 240/inch.
 - Text: substitute fonts. The family comes from MDR, else from the
   embedded character set's typeface via `_substitute_font()` (COURIER →
-  monospace, TIMES → serif, HELVETICA → sans), else Arial — so even when
+  monospace, TIMES → serif, HELVETICA → sans), else inferred from the
+  *external* coded-font name via `_coded_font_substitute()` (IBM/FOP
+  convention: `C0H`=Helvetica, `C04`=Courier, `C0N`=Times), else Arial —
+  so even when
   a char set's glyphs can't be drawn (external code page) its real metrics
   are approximated, which also curbs over-stretching. `textLength` +
   `lengthAdjust="spacingAndGlyphs"` stretches a run to the AFP-implied width
