@@ -496,3 +496,25 @@ def test_embedded_glyph_runs_keep_extractable_text() -> None:
     page = extract_pages(parse_file(str(sample)))[0]
     assert page.text_layer  # glyph-drawn runs recorded their decoded text
     assert "groff" in page.plain_text.lower()
+
+
+def test_decode_trn_strips_undecodable_control_chars() -> None:
+    # Bytes a code page can't map to a glyph decode to control chars (e.g.
+    # FOP's list bullet X'3F' -> U+001A in cp500). Render them as nothing,
+    # not a tofu box.
+    from readafp.ptoca import _decode_trn, _strip_controls
+    assert _strip_controls("a\x1ab\x00c\x9fd") == "abcd"
+    assert _strip_controls("keep\ttab\nand space") == "keep\ttab\nand space"
+    assert _strip_controls("plain text") == "plain text"
+    assert _decode_trn(b"\x3f", "cp500") == ""  # the FOP bullet byte
+
+
+def test_fit_scales_glyphs_not_gaps() -> None:
+    # A fitted run uses spacingAndGlyphs so a substitute font reads as wider,
+    # not as letters spread apart (the textdeko over-stretch fix).
+    from readafp.render import _fit
+    from readafp.ptoca import TextRun
+    runs = [TextRun(x=0, y=100, text="Hello world", font_size=40),
+            TextRun(x=240, y=100, text=".", font_size=40)]
+    out = _fit(runs, 0)
+    assert "spacingAndGlyphs" in out and "textLength" in out
