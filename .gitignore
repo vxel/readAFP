@@ -17,3 +17,6 @@ LAUNCH.md
 build/
 dist/
 *.spec
+
+# Local PDF-vs-render comparison reports
+comparison/
