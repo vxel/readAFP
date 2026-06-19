@@ -1297,6 +1297,11 @@ def extract_pages(
                        or _coded_font_substitute(cs_name or ""))
                 if sub and lid not in fonts:
                     fonts[lid] = FontInfo(family=sub[0], weight=sub[1])
+                elif lid not in fonts and lid not in embedded_text_fonts:
+                    # External font whose typeface we can't even infer from the
+                    # coded-font name (e.g. C0EXxxxx): register it anyway so the
+                    # run is still flagged, drawn in the default Arial.
+                    fonts[lid] = FontInfo()
                 # Fidelity: flag ids that will draw in a substitute font (i.e.
                 # not via the file's own embedded glyphs) so the viewer can
                 # explain the approximation. Skip ids drawn in real glyphs.
