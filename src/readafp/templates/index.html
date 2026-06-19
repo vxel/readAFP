@@ -286,12 +286,10 @@
     #fid-toggle.fid-on {
       background: #fef3c7; border-color: #f59e0b; color: #92400e;
     }
-    #sheet.fid-show [data-fidelity].fid-in {
-      text-decoration: underline dotted #d97706;
-      text-decoration-thickness: 0.07em;
-      text-underline-offset: 0.06em;
-      cursor: help;
-    }
+    #sheet.fid-show [data-fidelity].fid-in { cursor: help; }
+    /* Highlighter box drawn behind a flagged element (JS sizes it from the
+       element's getBBox), distinct from the document's own underlines. */
+    .fid-mark { fill: #f59e0b; fill-opacity: .18; pointer-events: none; }
     #fid-tip {
       position: fixed; z-index: 1000; max-width: 330px;
       background: #1f2433; color: #eef1f8;
@@ -466,7 +464,7 @@
           <option value="2">200%</option>
           <option value="4">400%</option>
         </select>
-        <button type="button" id="fid-toggle" class="fid-on" title="Fidelity notes: mark parts of the render that approximate the original (substitute fonts, estimated sizes, omitted glyphs…) and explain why on hover. Click to hide.">⚠ Fidelity notes</button>
+        <button type="button" id="fid-toggle" title="Fidelity notes (off): click to highlight parts of the render that approximate the original (substitute fonts, estimated sizes, omitted glyphs…) and explain why on hover.">⚠ Fidelity notes</button>
         <select id="fid-scope" title="Which approximations to flag">
           <option value="all" selected>All notes</option>
           <option value="font">Fonts only</option>
@@ -595,7 +593,8 @@
       tip.id = "fid-tip";
       document.body.appendChild(tip);
       const SCOPES = { all: null, font: new Set(["font"]) };
-      let on = true;
+      const SVG_NS = "http://www.w3.org/2000/svg";
+      let on = false;  // opt-in: off until the user clicks the toggle
 
       const parse = (el) => {
         try { return JSON.parse(el.dataset.fidelity) || []; }
@@ -613,8 +612,23 @@
 
       function applyFidelity() {
         sheet.classList.toggle("fid-show", on);
+        sheet.querySelectorAll(".fid-mark").forEach((r) => r.remove());
         sheet.querySelectorAll("[data-fidelity]").forEach((el) => {
-          el.classList.toggle("fid-in", on && inScope(parse(el)).length > 0);
+          const hit = on && inScope(parse(el)).length > 0;
+          el.classList.toggle("fid-in", hit);
+          if (!hit) return;
+          let bb;
+          try { bb = el.getBBox(); } catch (e) { return; }
+          if (!bb || !bb.width) return;
+          const pad = Math.max(bb.height * 0.12, 6);
+          const rect = document.createElementNS(SVG_NS, "rect");
+          rect.setAttribute("x", bb.x - pad);
+          rect.setAttribute("y", bb.y - pad * 0.4);
+          rect.setAttribute("width", bb.width + pad * 2);
+          rect.setAttribute("height", bb.height + pad * 0.8);
+          rect.setAttribute("rx", pad * 0.6);
+          rect.setAttribute("class", "fid-mark");
+          el.parentNode.insertBefore(rect, el);  // paint behind the element
         });
       }
       window.__applyFidelity = applyFidelity;
