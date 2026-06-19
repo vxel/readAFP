@@ -98,12 +98,28 @@ class ControlSequence:
 
 
 @dataclass
+class FidelityNote:
+    """A reason the render of an element may differ from the original.
+
+    ``cat`` groups notes so the viewer can filter them: ``font`` (substitute
+    font, external/non-embedded reference, estimated size, stretched run),
+    ``glyph`` (a code point we couldn't map and omitted), ``codepage``
+    (decoded with a fallback/bridged code page), ``image`` (composite or
+    scaling approximation). ``msg`` is a short human explanation.
+    """
+
+    cat: str
+    msg: str
+
+
+@dataclass
 class FontInfo:
     """A font mapped to a local id by MDR/MCF, as far as we can decode it."""
 
     family: str = "Arial"
     weight: str = "normal"
     size: Optional[int] = None  # L-units (at 1440/inch, 1pt = 20 units)
+    notes: List[FidelityNote] = field(default_factory=list)
 
 
 @dataclass
@@ -121,6 +137,7 @@ class TextRun:
     orientation: int = 0  # clockwise degrees (0/90/180/270) from STO
     src: Optional[int] = None  # offset of the PTX field that produced it
     fit: bool = True  # allow width-fitting; False for fixed synthetic layout
+    notes: List[FidelityNote] = field(default_factory=list)
 
 
 @dataclass
@@ -137,6 +154,7 @@ class ImageRef:
     bands: Optional[List[bytes]] = None
     # Scale without smoothing (bar code symbols: one pixel per module).
     crisp: bool = False
+    notes: List[FidelityNote] = field(default_factory=list)
 
 
 @dataclass
@@ -231,6 +249,40 @@ def iter_control_sequences(data: bytes) -> Iterator[ControlSequence]:
         pos += length
 
 
+def _decode_trn_counted(
+    params: bytes, codepage: str = "cp500"
+) -> Tuple[str, int, str]:
+    """Decode TRN text, plus glyphs-stripped count and the codec used.
+
+    Same decoding as :func:`_decode_trn`. The extra returns let callers
+    raise fidelity notes: the count of code points dropped by
+    :func:`_strip_controls` (producer symbol bytes the generic codec can't
+    map) and the codec actually applied (``"utf-16-be"`` for TrueType flows,
+    else the EBCDIC code page) so a "fallback code page" note never fires on
+    a Unicode run.
+    """
+    if len(params) >= 2 and len(params) % 2 == 0:
+        high_zeros = sum(1 for b in params[0::2] if b == 0)
+        if high_zeros >= len(params) // 2 * 0.8:
+            try:
+                return params.decode("utf-16-be"), 0, "utf-16-be"
+            except UnicodeDecodeError:
+                pass
+    used = codepage
+    try:
+        text = params.decode(codepage)
+    except (UnicodeDecodeError, LookupError):
+        text = params.decode("cp500", errors="replace")
+        used = "cp500"
+    # Apache FOP encodes its list bullet at EBCDIC X'3F' (the only byte that
+    # cp500-family codecs map to U+001A, an undefined control never used for
+    # real text). FOP's own AFP+PDF output confirms X'3F' ↔ "•", so render it
+    # as a bullet rather than dropping it as a control.
+    text = text.replace("\x1a", "•")
+    stripped = _strip_controls(text)
+    return stripped, len(text) - len(stripped), used
+
+
 def _decode_trn(params: bytes, codepage: str = "cp500") -> str:
     """Decode TRN text bytes: UTF-16BE for TrueType flows, else EBCDIC.
 
@@ -239,23 +291,7 @@ def _decode_trn(params: bytes, codepage: str = "cp500") -> str:
     choice. The UTF-16BE heuristic stays: text over Latin scripts has a
     zero high byte for nearly every character.
     """
-    if len(params) >= 2 and len(params) % 2 == 0:
-        high_zeros = sum(1 for b in params[0::2] if b == 0)
-        if high_zeros >= len(params) // 2 * 0.8:
-            try:
-                return params.decode("utf-16-be")
-            except UnicodeDecodeError:
-                pass
-    try:
-        text = params.decode(codepage)
-    except (UnicodeDecodeError, LookupError):
-        text = params.decode("cp500", errors="replace")
-    # Apache FOP encodes its list bullet at EBCDIC X'3F' (the only byte that
-    # cp500-family codecs map to U+001A, an undefined control never used for
-    # real text). FOP's own AFP+PDF output confirms X'3F' ↔ "•", so render it
-    # as a bullet rather than dropping it as a control.
-    text = text.replace("\x1a", "•")
-    return _strip_controls(text)
+    return _decode_trn_counted(params, codepage)[0]  # text only
 
 
 def _strip_controls(text: str) -> str:
@@ -318,6 +354,24 @@ def _coded_font_substitute(name: str) -> Optional[Tuple[str, str]]:
     if len(name) >= 3 and name[:2] == "C0":
         return _substitute_font(_CODED_FONT_TYPEFACE.get(name[2], ""))
     return None
+
+
+# Short label for a CSS font stack, for fidelity notes ("…rendered as Arial").
+_FAMILY_LABEL = {
+    "Arial, sans-serif": "Arial",
+    "Times New Roman, serif": "Times New Roman",
+    "Courier New, monospace": "Courier New",
+}
+
+
+def _typeface_label(cs_name: str, typefaces: Dict[str, str]) -> str:
+    """Readable typeface for a character set: embedded name, else coded-font."""
+    tf = typefaces.get(cs_name or "", "")
+    if tf:
+        return tf.title().replace("-", " ")
+    if len(cs_name) >= 3 and cs_name[:2] == "C0":
+        return _CODED_FONT_TYPEFACE.get(cs_name[2], "").title()
+    return ""
 
 
 def parse_mdr_fonts(data: bytes) -> Dict[int, FontInfo]:
@@ -488,9 +542,8 @@ class _TextState:
                 # fall through and draw the whole run in a substitute font.
             # Default size is ~12pt in the page's own resolution (1440/inch
             # gives 240; FOP emits 240/inch where 12pt is just 40).
-            text = _decode_trn(
-                p, self.font_codepages.get(self.font_id, self.codepage)
-            )
+            cp = self.font_codepages.get(self.font_id, self.codepage)
+            text, n_stripped, used_codec = _decode_trn_counted(p, cp)
             if (
                 self.wrap_width is not None
                 and self.i > 0
@@ -507,6 +560,19 @@ class _TextState:
                         tx, ty = self.b, self.i
                     else:
                         tx, ty = self.i, self.b
+                    notes = list(info.notes)
+                    if n_stripped:
+                        notes.append(FidelityNote(
+                            "glyph",
+                            f"{n_stripped} character(s) omitted — code "
+                            f"point(s) the {used_codec} codec can't map "
+                            f"(usually a producer-specific symbol)."))
+                    if (used_codec != "utf-16-be"
+                            and self.font_id not in self.font_codepages):
+                        notes.append(FidelityNote(
+                            "codepage",
+                            f"No code page declared for this font — text "
+                            f"decoded with the fallback {used_codec}."))
                     page.texts.append(
                         TextRun(
                             x=tx,
@@ -519,6 +585,7 @@ class _TextState:
                             font_weight=info.weight,
                             orientation=self.orientation,
                             src=self.field_offset,
+                            notes=notes,
                         )
                     )
                 else:
@@ -753,15 +820,40 @@ def _estimate_font_sizes(page: Page, known_fonts: Dict[int, FontInfo]) -> None:
 
     for run in page.texts:
         if run.font_id in sized:
-            continue
+            continue  # MDR declared an exact size; nothing approximated
+        inferred = False
         if run.font_id in pitch_est:
             run.font_size = pitch_est[run.font_id]
-            continue
-        widths = samples.get(run.font_id)
-        if widths:
-            widths.sort()
-            median = widths[len(widths) // 2]
-            run.font_size = max(lo, min(hi, int(median / 0.52)))
+            inferred = True
+        else:
+            widths = samples.get(run.font_id)
+            if widths:
+                widths.sort()
+                median = widths[len(widths) // 2]
+                run.font_size = max(lo, min(hi, int(median / 0.52)))
+                inferred = True
+        # Fidelity: the producer didn't declare this font's point size.
+        pt = round(run.font_size / page.units_per_inch * 72)
+        if inferred:
+            msg = (f"Point size not declared — estimated ≈{pt}pt from "
+                   f"the producer's line spacing.")
+        else:
+            msg = (f"Point size not declared and not inferable (single "
+                   f"line) — using a default of ≈{pt}pt.")
+        if not any(n.msg == msg for n in run.notes):
+            run.notes.append(FidelityNote("font", msg))
+
+
+def _annotate_image_notes(pages: List[Page]) -> None:
+    """Note images rendered through an optical/scaling approximation."""
+    for page in pages:
+        for img in page.images:
+            if img.bands and not any(n.cat == "image" for n in img.notes):
+                img.notes.append(FidelityNote(
+                    "image",
+                    "CMYK image composited from 4 ink planes via SVG "
+                    "filters + multiply blend — on-screen colours are an "
+                    "optical approximation of the printed inks."))
 
 
 _IMAGE_MAGICS = (
@@ -1205,6 +1297,33 @@ def extract_pages(
                        or _coded_font_substitute(cs_name or ""))
                 if sub and lid not in fonts:
                     fonts[lid] = FontInfo(family=sub[0], weight=sub[1])
+                # Fidelity: flag ids that will draw in a substitute font (i.e.
+                # not via the file's own embedded glyphs) so the viewer can
+                # explain the approximation. Skip ids drawn in real glyphs.
+                info = fonts.get(lid)
+                if info is not None and lid not in embedded_text_fonts:
+                    label = _typeface_label(cs_name or "", char_set_typefaces)
+                    fam = _FAMILY_LABEL.get(info.family, info.family)
+                    cs_embedded = bool(
+                        char_set_glyphs.get(cs_name or "")
+                        or char_set_outlines.get(cs_name or "")
+                    )
+                    disp = (cs_name or "").strip() or "?"
+                    if cs_embedded:
+                        msg = (
+                            f"Drawn in substitute font {fam}"
+                            + (f" for {label}" if label else "")
+                            + " — the embedded glyphs aren't used at this size."
+                        )
+                    else:
+                        who = f"{label} (“{disp}”)" if label else f"“{disp}”"
+                        msg = (
+                            f"{who} is referenced but not embedded in this "
+                            f"file — rendered with the system {fam}; "
+                            f"glyph widths are approximated."
+                        )
+                    if not any(n.msg == msg for n in info.notes):
+                        info.notes.append(FidelityNote("font", msg))
         elif f.sf_id == 0xD3A6AF and len(f.data) >= 12:  # PGD
             parsed = _parse_pgd(f.data)
             if current is not None:
@@ -1264,6 +1383,7 @@ def extract_pages(
                 )
             )
             pages.append(page)
+    _annotate_image_notes(pages)
     return pages
 
 
