@@ -283,9 +283,14 @@
     .about-close:hover { color: var(--text); }
 
     /* Fidelity notes: mark approximated render regions + explain on hover. */
-    #fid-toggle.fid-on {
+    #fid-toggle.fid-on {           /* layer on */
       background: #fef3c7; border-color: #f59e0b; color: #92400e;
     }
+    #fid-toggle.fid-has {          /* off, but this page has notes to show */
+      border-color: #f59e0b; color: #d97706;
+    }
+    #fid-toggle.fid-none { opacity: .45; }   /* nothing approximated here */
+    #fid-count { font-variant-numeric: tabular-nums; }
     #sheet.fid-show [data-fidelity].fid-in { cursor: help; }
     /* Highlighter box drawn behind a flagged element (JS sizes it from the
        element's getBBox), distinct from the document's own underlines. */
@@ -464,7 +469,7 @@
           <option value="2">200%</option>
           <option value="4">400%</option>
         </select>
-        <button type="button" id="fid-toggle" title="Fidelity notes (off): click to highlight parts of the render that approximate the original (substitute fonts, estimated sizes, omitted glyphs…) and explain why on hover.">⚠ Fidelity notes</button>
+        <button type="button" id="fid-toggle" title="Fidelity notes: highlight parts of the render that approximate the original (substitute fonts, estimated sizes, omitted glyphs…) and explain why on hover.">⚠ Fidelity notes<span id="fid-count"></span></button>
         <select id="fid-scope" title="Which approximations to flag">
           <option value="all" selected>All notes</option>
           <option value="font">Fonts only</option>
@@ -588,6 +593,7 @@
     (function setupFidelity() {
       const toggle = document.getElementById("fid-toggle");
       const scopeSel = document.getElementById("fid-scope");
+      const fidCount = document.getElementById("fid-count");
       if (!sheet || !toggle) return;
       const tip = document.createElement("div");
       tip.id = "fid-tip";
@@ -630,6 +636,27 @@
           rect.setAttribute("class", "fid-mark");
           el.parentNode.insertBefore(rect, el);  // paint behind the element
         });
+        updateButton();
+      }
+
+      // Proactively show the button's state for the current page: a count +
+      // amber outline when there are notes to see (even while the layer is
+      // off), dimmed when nothing on this page is approximated.
+      function updateButton() {
+        let n = 0;
+        sheet.querySelectorAll("[data-fidelity]").forEach((el) => {
+          if (inScope(parse(el)).length) n += 1;
+        });
+        fidCount.textContent = n ? ` (${n})` : "";
+        toggle.classList.toggle("fid-on", on);
+        toggle.classList.toggle("fid-has", !on && n > 0);
+        toggle.classList.toggle("fid-none", n === 0);
+        toggle.title = n === 0
+          ? "Fidelity notes: nothing on this page is approximated — rendered faithfully."
+          : on
+            ? `Fidelity notes (on): ${n} approximated region(s) — click to hide.`
+            : `Fidelity notes: ${n} approximated region(s) on this page — `
+              + "click to highlight them and see why on hover.";
       }
       window.__applyFidelity = applyFidelity;
 
