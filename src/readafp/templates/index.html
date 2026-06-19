@@ -281,6 +281,35 @@
       cursor: pointer; padding: 2px 6px; line-height: 1;
     }
     .about-close:hover { color: var(--text); }
+
+    /* Fidelity notes: mark approximated render regions + explain on hover. */
+    #fid-toggle.fid-on {           /* layer on */
+      background: #fef3c7; border-color: #f59e0b; color: #92400e;
+    }
+    #fid-toggle.fid-has {          /* off, but this page has notes to show */
+      border-color: #f59e0b; color: #d97706;
+    }
+    #fid-toggle.fid-none { opacity: .45; }   /* nothing approximated here */
+    #fid-count { font-variant-numeric: tabular-nums; }
+    #sheet.fid-show [data-fidelity].fid-in { cursor: help; }
+    /* Highlighter box drawn behind a flagged element (JS sizes it from the
+       element's getBBox), distinct from the document's own underlines. */
+    .fid-mark { fill: #f59e0b; fill-opacity: .18; pointer-events: none; }
+    #fid-tip {
+      position: fixed; z-index: 1000; max-width: 330px;
+      background: #1f2433; color: #eef1f8;
+      font: 12px/1.45 "Segoe UI", Arial, sans-serif;
+      padding: 8px 11px; border-radius: 8px;
+      box-shadow: 0 6px 24px rgba(0,0,0,.4);
+      pointer-events: none; display: none;
+    }
+    #fid-tip h4 {
+      margin: 0 0 5px; font-size: 10.5px; letter-spacing: .05em;
+      text-transform: uppercase; color: #fbbf24;
+    }
+    #fid-tip ul { margin: 0; padding-left: 15px; }
+    #fid-tip li { margin: 3px 0; }
+    #fid-tip li .cat { color: #9aa4bf; text-transform: capitalize; }
   </style>
 </head>
 <body>
@@ -440,6 +469,11 @@
           <option value="2">200%</option>
           <option value="4">400%</option>
         </select>
+        <button type="button" id="fid-toggle" title="Fidelity notes: highlight parts of the render that approximate the original (substitute fonts, estimated sizes, omitted glyphs…) and explain why on hover.">⚠ Fidelity notes<span id="fid-count"></span></button>
+        <select id="fid-scope" title="Which approximations to flag">
+          <option value="all" selected>All notes</option>
+          <option value="font">Fonts only</option>
+        </select>
         <span class="render-note" id="xy" title="Pointer position on the page, in inches"></span>
         {% if page_total > page_svgs|length %}
         <span class="render-warn" title="readAFP renders only the first {{ page_svgs|length }} pages to keep the in-browser SVG payload responsive — rendering all {{ "{:,}".format(page_total) }} pages at once would bloat the page and could freeze your browser. The inspector on the left still lists every structured field in the whole file.">⚠ Showing first {{ page_svgs|length }} of {{ "{:,}".format(page_total) }} pages — why?</span>
@@ -502,6 +536,7 @@
       pageIdx = Math.max(0, Math.min(idx, svgs.length - 1));
       sheet.innerHTML = svgs[pageIdx];
       applyZoom();
+      if (window.__applyFidelity) window.__applyFidelity();
       pageInput.value = pageIdx + 1;
       firstBtn.disabled = prevBtn.disabled = pageIdx === 0;
       nextBtn.disabled = lastBtn.disabled = pageIdx === svgs.length - 1;
@@ -549,6 +584,122 @@
       zoomSel.addEventListener("change", applyZoom);
       showPage(0, false);
     }
+
+    // Fidelity notes: dotted-underline every render element that carries a
+    // data-fidelity payload (a substitute font, estimated size, omitted
+    // glyph, fallback code page, composited image…) and explain why on
+    // hover. A toggle hides the whole layer; a scope select narrows it to
+    // font-only notes. Re-tagged on every page swap via window.__applyFidelity.
+    (function setupFidelity() {
+      const toggle = document.getElementById("fid-toggle");
+      const scopeSel = document.getElementById("fid-scope");
+      const fidCount = document.getElementById("fid-count");
+      if (!sheet || !toggle) return;
+      const tip = document.createElement("div");
+      tip.id = "fid-tip";
+      document.body.appendChild(tip);
+      const SCOPES = { all: null, font: new Set(["font"]) };
+      const SVG_NS = "http://www.w3.org/2000/svg";
+      let on = false;  // opt-in: off until the user clicks the toggle
+
+      const parse = (el) => {
+        try { return JSON.parse(el.dataset.fidelity) || []; }
+        catch (e) { return []; }
+      };
+      const inScope = (notes) => {
+        const allow = SCOPES[scopeSel.value];
+        return allow ? notes.filter((n) => allow.has(n.cat)) : notes;
+      };
+      const escapeHtml = (s) => {
+        const d = document.createElement("div");
+        d.textContent = s;
+        return d.innerHTML;
+      };
+
+      function applyFidelity() {
+        sheet.classList.toggle("fid-show", on);
+        sheet.querySelectorAll(".fid-mark").forEach((r) => r.remove());
+        sheet.querySelectorAll("[data-fidelity]").forEach((el) => {
+          const hit = on && inScope(parse(el)).length > 0;
+          el.classList.toggle("fid-in", hit);
+          if (!hit) return;
+          let bb;
+          try { bb = el.getBBox(); } catch (e) { return; }
+          if (!bb || !bb.width) return;
+          const pad = Math.max(bb.height * 0.12, 6);
+          const rect = document.createElementNS(SVG_NS, "rect");
+          rect.setAttribute("x", bb.x - pad);
+          rect.setAttribute("y", bb.y - pad * 0.4);
+          rect.setAttribute("width", bb.width + pad * 2);
+          rect.setAttribute("height", bb.height + pad * 0.8);
+          rect.setAttribute("rx", pad * 0.6);
+          rect.setAttribute("class", "fid-mark");
+          el.parentNode.insertBefore(rect, el);  // paint behind the element
+        });
+        updateButton();
+      }
+
+      // Proactively show the button's state for the current page: a count +
+      // amber outline when there are notes to see (even while the layer is
+      // off), dimmed when nothing on this page is approximated.
+      function updateButton() {
+        let n = 0;
+        sheet.querySelectorAll("[data-fidelity]").forEach((el) => {
+          if (inScope(parse(el)).length) n += 1;
+        });
+        fidCount.textContent = n ? ` (${n})` : "";
+        toggle.classList.toggle("fid-on", on);
+        toggle.classList.toggle("fid-has", !on && n > 0);
+        toggle.classList.toggle("fid-none", n === 0);
+        toggle.title = n === 0
+          ? "Fidelity notes: nothing on this page is approximated — rendered faithfully."
+          : on
+            ? `Fidelity notes (on): ${n} approximated region(s) — click to hide.`
+            : `Fidelity notes: ${n} approximated region(s) on this page — `
+              + "click to highlight them and see why on hover.";
+      }
+      window.__applyFidelity = applyFidelity;
+
+      function positionTip(e) {
+        const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+        let x = e.clientX + pad, y = e.clientY + pad;
+        if (x + w > innerWidth) x = e.clientX - w - pad;
+        if (y + h > innerHeight) y = e.clientY - h - pad;
+        tip.style.left = x + "px";
+        tip.style.top = y + "px";
+      }
+      sheet.addEventListener("mouseover", (e) => {
+        if (!on) return;
+        const el = e.target.closest && e.target.closest("[data-fidelity]");
+        if (!el || !sheet.contains(el)) return;
+        const notes = inScope(parse(el));
+        if (!notes.length) return;
+        tip.innerHTML = "<h4>⚠ Why this may differ</h4><ul>" +
+          notes.map((n) =>
+            `<li><span class="cat">${escapeHtml(n.cat)}:</span> ` +
+            `${escapeHtml(n.msg)}</li>`).join("") + "</ul>";
+        tip.style.display = "block";
+        positionTip(e);
+      });
+      sheet.addEventListener("mousemove", (e) => {
+        if (tip.style.display === "block") positionTip(e);
+      });
+      sheet.addEventListener("mouseout", (e) => {
+        const to = e.relatedTarget;
+        if (!to || !to.closest || !to.closest("[data-fidelity]")) {
+          tip.style.display = "none";
+        }
+      });
+
+      toggle.addEventListener("click", () => {
+        on = !on;
+        toggle.classList.toggle("fid-on", on);
+        if (!on) tip.style.display = "none";
+        applyFidelity();
+      });
+      scopeSel.addEventListener("change", applyFidelity);
+      applyFidelity();
+    })();
 
     // Inspector row click -> jump the render to that field's page and
     // flash the exact content (text runs, rules) that field produced.

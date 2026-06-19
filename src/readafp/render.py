@@ -7,6 +7,7 @@ viewBox is the page size and the browser scales it.
 """
 
 import base64
+import json
 import logging
 from typing import List
 from xml.sax.saxutils import escape, quoteattr
@@ -14,6 +15,23 @@ from xml.sax.saxutils import escape, quoteattr
 from readafp.ptoca import MAX_RUNS_PER_PAGE, ImageRef, Page, VectorGraphic
 
 logger = logging.getLogger(__name__)
+
+
+def _fidelity_attr(notes) -> str:
+    """Serialize fidelity notes to a ``data-fidelity`` JSON attribute.
+
+    The viewer reads this to mark approximated elements and explain, on
+    hover, why the render may differ from the original. Empty when a run
+    or image is rendered exactly as the AFP specifies.
+    """
+    if not notes:
+        return ""
+    payload = json.dumps(
+        [{"cat": n.cat, "msg": n.msg} for n in notes],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f" data-fidelity={quoteattr(payload)}"
 
 # Each CMYK plane JPEG is grayscale (R=G=B = ink amount). The filters
 # map a plane to its complement color (C ink absorbs red, ...), so
@@ -43,11 +61,12 @@ def _image_markup(img: ImageRef) -> str:
         f'x="{img.x}" y="{img.y}" width="{img.width}" '
         f'height="{img.height}" preserveAspectRatio="xMidYMid meet"'
     )
+    fid = _fidelity_attr(img.notes)
     if not img.bands:
         b64 = base64.b64encode(img.data).decode("ascii")
         crisp = ' style="image-rendering:pixelated"' if img.crisp else ""
-        return f'<image {box}{crisp} href="data:{img.mime};base64,{b64}"/>'
-    parts = ['<g style="isolation:isolate">']
+        return f'<image {box}{crisp}{fid} href="data:{img.mime};base64,{b64}"/>'
+    parts = [f'<g style="isolation:isolate"{fid}>']
     for ink, blob in zip("cmyk", img.bands):
         b64 = base64.b64encode(blob).decode("ascii")
         # The first (opaque) plane is the blend base for the rest.
@@ -153,7 +172,8 @@ def page_to_svg(page: Page) -> str:
         )
         parts.append(
             f'<text x="{run.x}" y="{run.y}" font-size="{run.font_size}"'
-            f"{family}{weight}{src}{rot}{_fit(page.texts, i)} "
+            f"{family}{weight}{src}{rot}{_fit(page.texts, i)}"
+            f"{_fidelity_attr(run.notes)} "
             f'fill={quoteattr(run.color)}>{escape(run.text)}</text>'
         )
     if page.truncated:
