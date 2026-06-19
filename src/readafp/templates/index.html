@@ -939,11 +939,23 @@
     const aboutBtn = document.getElementById("about-btn");
     const aboutDlg = document.getElementById("about-dlg");
     const aboutClose = document.getElementById("about-close");
-    function openAbout() { aboutDlg.showModal(); }
+    // Guard re-entry (showModal throws if the dialog is already open) and
+    // ignore a backdrop-click for a moment after opening, so a double-click
+    // on the button doesn't open then immediately close it — the second
+    // click lands on the now-covering modal backdrop. That self-close was
+    // the cause of "About sometimes doesn't work".
+    let aboutOpenedAt = 0;
+    function openAbout() {
+      if (aboutDlg.open) return;
+      aboutOpenedAt = Date.now();
+      aboutDlg.showModal();
+    }
     aboutBtn.addEventListener("click", openAbout);
     document.getElementById("agree-terms").addEventListener("click", openAbout);
     aboutClose.addEventListener("click", () => aboutDlg.close());
-    aboutDlg.addEventListener("click", (e) => { if (e.target === aboutDlg) aboutDlg.close(); });
+    aboutDlg.addEventListener("click", (e) => {
+      if (e.target === aboutDlg && Date.now() - aboutOpenedAt > 300) aboutDlg.close();
+    });
 
     // Remember the terms agreement for the rest of the browser session so
     // it only has to be ticked once, not on every upload.
