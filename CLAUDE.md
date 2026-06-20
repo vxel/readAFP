@@ -173,6 +173,13 @@ engine-load failure it falls back to a normal server submit. Validated
 end-to-end in a real browser (Playwright): renders correctly with zero POST.
 v1 limitation: it `document.write`s the full page, so opening another file
 reloads Pyodide — a future fragment-injection version would keep it warm.
+**Because `document.write` reuses the JS realm, every executable inline
+`<script>` in `index.html` MUST be wrapped in an IIFE** — a top-level
+`const`/`let` is re-declared on the 2nd/3rd open and throws "already
+declared", aborting that whole block (this silently killed page navigation
+on repeat opens). Cross-block sharing goes via `window.*` (e.g.
+`window.__applyFidelity`). `tests/test_app.py::test_inline_scripts_are_iife_wrapped`
+guards this.
 
 ## Rendering Fidelity Principle
 
