@@ -14,7 +14,26 @@ from readafp.app import (
 from readafp.parser import iter_fields
 from readafp.parser import parse_file
 
+
+@pytest.mark.parametrize("decl", ["const svgs", "const dropInput"])
+def test_inline_scripts_are_iife_wrapped(decl: str) -> None:
+    """The in-browser (Pyodide) path delivers pages via document.write, which
+    reuses the JS realm — a top-level const/let then throws "already declared"
+    on a 2nd/3rd open and aborts the whole script block (page nav died). Guard
+    that the executable inline blocks are wrapped in an IIFE so they declare no
+    globals.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    idx = html.index(decl)
+    block_start = html.rindex("<script>", 0, idx)
+    assert "(function" in html[block_start:idx], (
+        f"{decl!r} is at script top level — wrap its block in an IIFE so "
+        f"document.write re-opens don't redeclare it."
+    )
+
 TESTDATA = Path(__file__).parent.parent / "testdata"
+INDEX_HTML = (Path(__file__).parent.parent / "src" / "readafp"
+              / "templates" / "index.html")
 HEALTH_SAMPLE = TESTDATA / "sample1_health" / "01_Health_Coverage.afp"
 OUTLINE_FONT = TESTDATA / "github-samples" / "afplib" / "C0X00006.afp"
 CS_OVERLAY = TESTDATA / "github-samples" / "afplib" / "cs.afp"

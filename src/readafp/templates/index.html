@@ -488,6 +488,11 @@
   </div>
 
   <script>
+  // Wrapped in an IIFE so no top-level const/let leaks to the global scope:
+  // the in-browser (Pyodide) path delivers pages via document.write, which
+  // reuses the JS realm, and re-declaring globals there throws "already
+  // declared" and aborts the whole block (page nav died on a 2nd/3rd open).
+  (function () {
     const svgs = [{% for svg in page_svgs or [] %}{{ svg|tojson }}{{ "," if not loop.last }}{% endfor %}];
     let pageIdx = 0;
     const sheet = document.getElementById("sheet");
@@ -886,6 +891,7 @@
         document.addEventListener("mouseup", onUp);
       });
     }
+  })();
   </script>
   {% endif %}
 
@@ -916,6 +922,7 @@
   </dialog>
 
   <script>
+  (function () {  // IIFE: keep these out of the global scope (see note above)
     // Drag-and-drop upload: drop an .afp anywhere on the page.
     const dropInput = document.querySelector('input[type=file]');
     const dropForm = document.querySelector("form");
@@ -972,6 +979,7 @@
     const emailLink = document.getElementById("author-email");
     const emailParts = ["keithlutzdea", "gmail.com"];
     emailLink.href = "mailto:" + emailParts[0] + "@" + emailParts[1];
+  })();
   </script>
 </body>
 </html>
