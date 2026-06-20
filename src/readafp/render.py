@@ -113,6 +113,30 @@ def _fit(texts, i) -> str:
     return f' textLength="{avail}" lengthAdjust="spacingAndGlyphs"'
 
 
+# Arial's space glyph advances about this fraction of the em. Used to turn an
+# SVI absolute space width into an SVG word-spacing delta (which is added on
+# top of the font's own space advance).
+_ARIAL_SPACE_RATIO = 0.278
+
+
+def _word_spacing(run) -> str:
+    """Honor a run's SVI space width via SVG word-spacing.
+
+    The AFP set each space's advance to ``run.space_width`` L-units (producers
+    vary it per line to justify). word-spacing is additive, so subtract the
+    substitute font's own space advance. Floored so a tight last line never
+    overlaps its words.
+    """
+    if run.space_width is None:
+        return ""
+    default_space = _ARIAL_SPACE_RATIO * run.font_size
+    delta = run.space_width - default_space
+    floor = -0.12 * run.font_size
+    if delta < floor:
+        delta = floor
+    return f' word-spacing="{delta:.1f}"'
+
+
 def _vector_graphic_markup(vg: VectorGraphic) -> str:
     """Nested <svg> that maps GPS coordinates to L-unit page space."""
     g = vg.graphic
@@ -170,9 +194,14 @@ def page_to_svg(page: Page) -> str:
             if run.orientation
             else ""
         )
+        # SVI word-spacing and the implied-width fit both set a run's extent;
+        # when the AFP gives an explicit space width, prefer it over the
+        # next-run-position estimate so justified spaces aren't overridden.
+        ws = _word_spacing(run)
+        width = ws if ws else _fit(page.texts, i)
         parts.append(
             f'<text x="{run.x}" y="{run.y}" font-size="{run.font_size}"'
-            f"{family}{weight}{src}{rot}{_fit(page.texts, i)}"
+            f"{family}{weight}{src}{rot}{width}"
             f"{_fidelity_attr(run.notes)} "
             f'fill={quoteattr(run.color)}>{escape(run.text)}</text>'
         )

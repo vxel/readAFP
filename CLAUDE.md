@@ -43,7 +43,16 @@ desktop.py   # standalone-.exe entry point (waitress + opens browser, local-only
 tests/
   test_parser.py, test_ptoca.py, test_triplets.py,
   test_ioca.py, test_bcoca.py, test_app.py, test_foca.py, test_goca.py,
-  test_cff.py, test_gcgid.py
+  test_cff.py, test_gcgid.py,
+  test_fop_pairs.py   # PDF-as-oracle: per-pair AFP-vs-PDF geometry check
+
+tools/
+  make_*_sample.py    # landing-page demo AFP generators (one per OCA)
+  pair_geometry.py    # AFP page-model + minimal PDF reader → comparable
+                      #   geometry (text baselines, colored-fill tops, in pt
+                      #   from page top); shared by test_fop_pairs + the harness
+  _compare_pair.py    # dev harness: side-by-side render vs PDF screenshots +
+                      #   geometry report → comparison/ (temp, gitignored out)
 
 testdata/
   sample1_health/     # modern TrueType AFP + PDF ground truth (1 page, 306 text runs)
@@ -75,7 +84,9 @@ EDT (End Document)
 
 **Structured fields** — fixed binary records: `0x5A` carriage-control, u16 length, 3-byte SF ID (`0xD3` + type_code + category_code), flags(1), sequence(2), data. Parsed by `iter_fields()`.
 
-**PTOCA control sequences** — inside PTX data; escape `0x2B 0xD3` introduces a sequence, then length/type/params. Low bit of type = chained (next sequence follows without escape). Key sequences: AMI/RMI (inline position), AMB/RMB (baseline position), SBI (baseline increment), TRN (transparent text), SCFL (set font local id), STC/SEC (color), DIR/DBR (draw rule), STO (text orientation).
+**PTOCA control sequences** — inside PTX data; escape `0x2B 0xD3` introduces a sequence, then length/type/params. Low bit of type = chained (next sequence follows without escape). Key sequences: AMI/RMI (inline position), AMB/RMB (baseline position), SBI (baseline increment), TRN (transparent text), SCFL (set font local id), STC/SEC (color), DIR/DBR (draw rule), STO (text
+orientation), SVI (set variable-space increment — the space character's
+advance; producers vary it per line to justify text).
 
 **Triplets** — self-identifying sub-parameters on structured fields: (u8 length, u8 id, data). Must tile their slot exactly. Key triplets: 0x02 FQN (Fully Qualified Name, with FQN type byte), 0x10 Object Classification, 0x82 Parameter Value.
 
@@ -110,17 +121,40 @@ Page(width, height, units_per_inch, texts, rules, images, truncated)
   embedded character set's typeface via `_substitute_font()` (COURIER →
   monospace, TIMES → serif, HELVETICA → sans), else inferred from the
   *external* coded-font name via `_coded_font_substitute()` (IBM/FOP
-  convention: `C0H`=Helvetica, `C04`=Courier, `C0N`=Times), else Arial —
-  so even when
+  convention: `C0H`=Helvetica, `C04`=Courier, `C0N`=Times), else Arial.
+  **Point size** comes from MDR if declared, else is decoded from the
+  external char-set name by `_coded_font_point_size()` — the IBM/FOP name's
+  7th char encodes it (`C0H200B0`=12pt, `…F0`=16, `…H0`=18, `…00`=10;
+  size = 10 + alphabet index). This is the only size signal when the file
+  embeds no font and has no MDR, so headings render at their true size
+  instead of the ~12pt default (verified exact vs the fop-pairs' PDF `Tf`
+  sizes on 7/8 pairs; only the scaled-text `textdeko` demo differs). Fonts
+  carrying a decoded size skip `_estimate_font_sizes`. So even when
   a char set's glyphs can't be drawn (external code page) its real metrics
   are approximated, which also curbs over-stretching. `textLength` +
   `lengthAdjust="spacingAndGlyphs"` stretches a run to the AFP-implied width
   from the next run's position (`_fit()`), ratio-guarded against distortion —
   scaling glyph shapes (reads as a wider face) rather than adding gaps between
   letters (which "spacing" alone did, spreading text apart on FOP pairs).
+  **Justification (SVI):** when a run carries a `space_width` (from a
+  preceding SVI control sequence), `render._word_spacing()` honors it via SVG
+  `word-spacing` (the space's advance minus the substitute font's own space
+  width, floored so a tight line never overlaps) instead of `_fit()` — so
+  FOP's per-line justified spacing reproduces (wide spaces on justified lines,
+  natural spacing on a paragraph's last line) rather than reading as ragged.
   Undecodable control chars (a code page's symbol code points the generic
-  EBCDIC codec can't map — e.g. FOP's bullet at X'3F') are stripped by
-  `_strip_controls` rather than rendered as tofu boxes.
+  EBCDIC codec can't map) are stripped by `_strip_controls` rather than
+  rendered as tofu boxes. **X'3F' (EBCDIC SUBSTITUTE, U+001A)** is special: a
+  producer writes it for any glyph it can't encode in the AFP code page. FOP
+  uses a lone X'3F' amid real text as its list bullet (rendered "•",
+  validated on the `list` pair), but a run that is *mostly* X'3F' means the
+  producer had no AFP font for those glyphs and dropped them wholesale — e.g.
+  the `fonts` pair's ZapfDingbats/Symbol specimen, which FOP couldn't map and
+  wrote as all-X'3F' (confirmed: the AFP references no symbol font, only the 4
+  text char sets + 2 code pages, as a commercial AFP viewer also reports).
+  `_decode_trn_counted` counts the substitutes; a predominantly-substitute run
+  gets a fidelity note ("glyphs the producer couldn't encode … absent from
+  this AFP") instead of being mistaken for a row of bullets.
 - Images: `<image>` with base64 data URI. CMYK planes use `<filter>` + `mix-blend-mode: multiply`. Bilevel/barcode: `image-rendering: pixelated` (`crisp=True`).
 
 ## In-browser mode (Pyodide / WASM)
@@ -285,6 +319,18 @@ local-id→name indirection is not yet handled.
   synthetic field — no corpus file carries a TLE, so the real triplet
   layout/encoding is unconfirmed. Verify against a real sample when one
   turns up.
+- **DBCS (double-byte / CJK) is not implemented** (backlog — see
+  `memory/dbcs-backlog.md`). Today only **UTF-16BE** (TrueType, CCSID
+  1200/13488, via the `ptoca.py`/`triplets.py` high-byte-zero heuristic) and
+  **single-byte EBCDIC** code pages (via the `gcgid.bridge_code_page`
+  byte→GCGID bridge) are decoded. There are no double-byte code-page tables
+  (Shift-JIS, EUC-JP/KR, GB2312, Big5, EBCDIC-DBCS / host CCSIDs like
+  300/930/1390); `gcgid.bridge_code_page` (`src/readafp/gcgid.py`) assumes
+  one byte = one character, so a DBCS stream would mis-split bytes and decode
+  as garbage. CJK glyph widths (full-width advance) and CID-aware DBCS glyph
+  routing are not handled. No corpus DBCS file exists yet for validation; a
+  synthetic fixture (CFF-oracle style) would be needed until a real one
+  appears. The user wants this expanded in a future round — don't drop it.
 
 Done recently: a readable inspector **"Field data" column**
 (`app._field_data_summary` + `foca.describe_foca_field`) decoding each

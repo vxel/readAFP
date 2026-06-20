@@ -7,15 +7,19 @@ import pytest
 from readafp.parser import iter_fields, parse_file
 from readafp.ptoca import (
     ControlSequence,
+    Page,
     extract_pages,
     iter_control_sequences,
     parse_mdr_fonts,
+    _TextState,
+    _coded_font_point_size,
     _decode_trn,
 )
 from readafp.render import page_to_svg
 
 TESTDATA = Path(__file__).parent.parent / "testdata"
 HEALTH_SAMPLE = TESTDATA / "sample1_health" / "01_Health_Coverage.afp"
+SIMPLE_PAIR = TESTDATA / "fop-pairs" / "simple.afp"
 
 # Escape, then a chain: AMI(0x0064) chained -> AMB(0x00C8) chained ->
 # TRN("AB" in EBCDIC) unchained.
@@ -47,6 +51,89 @@ def test_decode_trn_ebcdic() -> None:
 def test_control_sequence_names() -> None:
     assert "TRN" in ControlSequence(cs_type=0xDA, params=b"").name
     assert "Unknown" in ControlSequence(cs_type=0x10, params=b"").name
+
+
+def test_svi_sets_space_width_on_run() -> None:
+    # SVI(0x0014=20) chained -> TRN("A B" in EBCDIC) unchained.
+    data = bytes.fromhex("2bd3" "04c50014" "05dac140c2")
+    page = Page(units_per_inch=240)
+    state = _TextState()
+    for cs in iter_control_sequences(data):
+        state.apply(cs, page)
+    assert len(page.texts) == 1
+    run = page.texts[0]
+    assert run.text == "A B"
+    # The producer's variable-space increment rides on the run so the
+    # renderer can widen its spaces (justification).
+    assert run.space_width == 20
+    assert state.space_increment == 20
+
+
+def test_trn_without_svi_has_no_space_width() -> None:
+    # TRN("A B") with no preceding SVI: spaces fall back to the font default.
+    data = bytes.fromhex("2bd3" "05dac140c2")
+    page = Page(units_per_inch=240)
+    state = _TextState()
+    for cs in iter_control_sequences(data):
+        state.apply(cs, page)
+    assert page.texts[0].space_width is None
+
+
+def _dropped_note(run) -> bool:
+    return any("couldn't encode" in n.msg for n in run.notes)
+
+
+def test_dropped_glyph_run_is_flagged() -> None:
+    # TRN of all X'3F' (EBCDIC SUBSTITUTE) separated by EBCDIC spaces: the
+    # producer dropped these glyphs (no AFP font), e.g. a ZapfDingbats row.
+    data = bytes.fromhex("2bd3" "0ada" "3f403f403f403f40")
+    page = Page(units_per_inch=240)
+    state = _TextState()
+    for cs in iter_control_sequences(data):
+        state.apply(cs, page)
+    assert page.texts and _dropped_note(page.texts[0])
+
+
+def test_lone_substitute_is_not_flagged() -> None:
+    # A single X'3F' amid real text is FOP's list bullet, not a dropped run.
+    data = bytes.fromhex("2bd3" "08da" "c1403f40c240")  # "A • B"
+    page = Page(units_per_inch=240)
+    state = _TextState()
+    for cs in iter_control_sequences(data):
+        state.apply(cs, page)
+    assert page.texts and not _dropped_note(page.texts[0])
+
+
+def test_coded_font_point_size_from_name() -> None:
+    # IBM/FOP char-set name: 7th char encodes the size (B=12 … H=18, '0'=10).
+    assert _coded_font_point_size("C0H200B0") == 12
+    assert _coded_font_point_size("C0H200F0") == 16
+    assert _coded_font_point_size("C0H200H0") == 18
+    assert _coded_font_point_size("C0H20000") == 10
+    assert _coded_font_point_size("C0H400D0") == 14  # weight digit ignored
+    assert _coded_font_point_size("Arial") is None
+
+
+def test_external_font_size_decoded_from_name() -> None:
+    if not (TESTDATA / "fop-pairs" / "table.afp").exists():
+        pytest.skip("fop-pairs not present")
+    page = extract_pages(parse_file(
+        str(TESTDATA / "fop-pairs" / "table.afp")))[0]
+    pt = [round(t.font_size / page.units_per_inch * 72) for t in page.texts]
+    # Title 18pt, "A simple table" 16pt — not the 12pt body default.
+    assert pt[0] == 18 and pt[1] == 16
+
+
+def test_svi_justifies_simple_fop_pair() -> None:
+    if not SIMPLE_PAIR.exists():
+        pytest.skip("fop-pairs not present")
+    pages = extract_pages(parse_file(str(SIMPLE_PAIR)))
+    page = pages[0]
+    # FOP varies the SVI per line to justify: the first body line is wide
+    # (20) and a paragraph's last line drops to the natural minimum (7).
+    widths = {t.space_width for t in page.texts if t.space_width}
+    assert 20 in widths and 7 in widths
+    assert "word-spacing" in page_to_svg(page)
 
 
 def test_extract_pages_health_sample() -> None:

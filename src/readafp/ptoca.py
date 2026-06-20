@@ -119,6 +119,9 @@ class FontInfo:
     family: str = "Arial"
     weight: str = "normal"
     size: Optional[int] = None  # L-units (at 1440/inch, 1pt = 20 units)
+    # Point size decoded from an external coded-font name when no MDR/raster
+    # font declares one; resolved to L-units at render time (needs page upi).
+    size_pt: Optional[float] = None
     notes: List[FidelityNote] = field(default_factory=list)
 
 
@@ -137,6 +140,11 @@ class TextRun:
     orientation: int = 0  # clockwise degrees (0/90/180/270) from STO
     src: Optional[int] = None  # offset of the PTX field that produced it
     fit: bool = True  # allow width-fitting; False for fixed synthetic layout
+    # Width of the space character in L-units, from a preceding SVI (Set
+    # Variable Space Increment). Producers vary it per line to justify text
+    # (wide spaces fill the column; the last line drops to the natural
+    # minimum). None when no SVI applies — spaces use the font default.
+    space_width: Optional[int] = None
     notes: List[FidelityNote] = field(default_factory=list)
 
 
@@ -251,7 +259,7 @@ def iter_control_sequences(data: bytes) -> Iterator[ControlSequence]:
 
 def _decode_trn_counted(
     params: bytes, codepage: str = "cp500"
-) -> Tuple[str, int, str]:
+) -> Tuple[str, int, str, int]:
     """Decode TRN text, plus glyphs-stripped count and the codec used.
 
     Same decoding as :func:`_decode_trn`. The extra returns let callers
@@ -265,7 +273,7 @@ def _decode_trn_counted(
         high_zeros = sum(1 for b in params[0::2] if b == 0)
         if high_zeros >= len(params) // 2 * 0.8:
             try:
-                return params.decode("utf-16-be"), 0, "utf-16-be"
+                return params.decode("utf-16-be"), 0, "utf-16-be", 0
             except UnicodeDecodeError:
                 pass
     used = codepage
@@ -274,13 +282,18 @@ def _decode_trn_counted(
     except (UnicodeDecodeError, LookupError):
         text = params.decode("cp500", errors="replace")
         used = "cp500"
-    # Apache FOP encodes its list bullet at EBCDIC X'3F' (the only byte that
-    # cp500-family codecs map to U+001A, an undefined control never used for
-    # real text). FOP's own AFP+PDF output confirms X'3F' ↔ "•", so render it
-    # as a bullet rather than dropping it as a control.
+    # X'3F' is the EBCDIC SUBSTITUTE character (U+001A): the byte a producer
+    # writes when it cannot encode a glyph in the AFP code page. Apache FOP
+    # uses it two ways — a lone X'3F' amid real text is its list bullet
+    # (confirmed against FOP's own AFP+PDF list output, so we render "•"), but
+    # a run that is *mostly* X'3F' means the producer had no AFP font for those
+    # glyphs and dropped them wholesale (e.g. a ZapfDingbats/Symbol specimen
+    # FOP couldn't map becomes all X'3F'). Count them so the caller can flag a
+    # dropped-glyph run rather than pretend it was a row of bullets.
+    n_substitute = text.count("\x1a")
     text = text.replace("\x1a", "•")
     stripped = _strip_controls(text)
-    return stripped, len(text) - len(stripped), used
+    return stripped, len(text) - len(stripped), used, n_substitute
 
 
 def _decode_trn(params: bytes, codepage: str = "cp500") -> str:
@@ -353,6 +366,26 @@ def _coded_font_substitute(name: str) -> Optional[Tuple[str, str]]:
     """Infer a substitute font from an IBM/FOP coded-font name, or None."""
     if len(name) >= 3 and name[:2] == "C0":
         return _substitute_font(_CODED_FONT_TYPEFACE.get(name[2], ""))
+    return None
+
+
+def _coded_font_point_size(name: str) -> Optional[float]:
+    """Point size encoded in an IBM/FOP character-set name, or None.
+
+    IBM raster character-set names like ``C0H200B0`` carry the point size in
+    the 7th character: ``'0'`` (as in ``…00``) means 10 pt, otherwise
+    ``10 + the letter's position in the alphabet`` — B=12, D=14, F=16, H=18 …
+    Verified against the FOP fop-pairs' PDF ``Tf`` sizes (exact on 7 of 8
+    pairs; only the scaled-text ``textdeko`` demo uses sizes not in any name).
+    Only C0-prefixed names qualify, so it never fires on non-IBM names.
+    """
+    if len(name) < 7 or name[:2] != "C0":
+        return None
+    c = name[6]
+    if c == "0":
+        return 10.0
+    if "A" <= c <= "Z":
+        return 10.0 + (ord(c) - ord("A") + 1)
     return None
 
 
@@ -481,6 +514,9 @@ class _TextState:
         self.b = 0
         self.inline_margin = 0
         self.baseline_increment = 0
+        # Variable-space character increment (SVI), in L-units. None means
+        # no SVI seen, so spaces fall back to the font's own advance.
+        self.space_increment: Optional[int] = None
         self.color = DEFAULT_COLOR
         self.font_id: Optional[int] = None
         self.field_offset: Optional[int] = None
@@ -507,6 +543,8 @@ class _TextState:
             self.b += _s16(p)
         elif t == 0xC0 and len(p) >= 2:  # SIM
             self.inline_margin = _u16(p)
+        elif t == 0xC4 and len(p) >= 2:  # SVI: set variable-space increment
+            self.space_increment = _u16(p)
         elif t == 0xD0 and len(p) >= 2:  # SBI
             self.baseline_increment = _s16(p)
         elif t == 0xD8:  # BLN
@@ -527,7 +565,15 @@ class _TextState:
             self.b = 0
         elif t == 0xDA:  # TRN
             info = self.fonts.get(self.font_id, FontInfo())
-            size = info.size or max(page.units_per_inch // 6, 8)
+            # Prefer an MDR-declared L-unit size; else a point size decoded
+            # from the coded-font name, scaled to the page resolution; else a
+            # ~12pt default.
+            size = (
+                info.size
+                or (round(info.size_pt * page.units_per_inch / 72)
+                    if info.size_pt else 0)
+                or max(page.units_per_inch // 6, 8)
+            )
             emb = self.embedded_text_fonts.get(self.font_id)
             if emb is not None and self.orientation == 0:
                 drawn = (
@@ -543,7 +589,7 @@ class _TextState:
             # Default size is ~12pt in the page's own resolution (1440/inch
             # gives 240; FOP emits 240/inch where 12pt is just 40).
             cp = self.font_codepages.get(self.font_id, self.codepage)
-            text, n_stripped, used_codec = _decode_trn_counted(p, cp)
+            text, n_stripped, used_codec, n_sub = _decode_trn_counted(p, cp)
             if (
                 self.wrap_width is not None
                 and self.i > 0
@@ -567,12 +613,29 @@ class _TextState:
                             f"{n_stripped} character(s) omitted — code "
                             f"point(s) the {used_codec} codec can't map "
                             f"(usually a producer-specific symbol)."))
+                    # A run that is mostly EBCDIC substitute chars (X'3F') is
+                    # one whose glyphs the producer had no AFP font for and
+                    # dropped wholesale — e.g. a ZapfDingbats/Symbol specimen
+                    # FOP couldn't map. Flag it so the blanks/placeholders are
+                    # explained rather than read as real content.
+                    nonspace = sum(1 for ch in text if ch != " ")
+                    if n_sub >= 3 and nonspace and n_sub / nonspace > 0.5:
+                        notes.append(FidelityNote(
+                            "glyph",
+                            f"{n_sub} glyph(s) the producer couldn't encode in "
+                            f"the AFP code page (wrote substitute X'3F') — the "
+                            f"original glyphs (e.g. symbol/dingbat font) are "
+                            f"absent from this AFP, not just unrendered here."))
                     if (used_codec != "utf-16-be"
                             and self.font_id not in self.font_codepages):
                         notes.append(FidelityNote(
                             "codepage",
                             f"No code page declared for this font — text "
                             f"decoded with the fallback {used_codec}."))
+                    # A run carries its SVI space width only when the
+                    # producer set one and the run actually has spaces to
+                    # widen; otherwise spaces use the substitute font default.
+                    sw = self.space_increment if " " in text else None
                     page.texts.append(
                         TextRun(
                             x=tx,
@@ -585,12 +648,23 @@ class _TextState:
                             font_weight=info.weight,
                             orientation=self.orientation,
                             src=self.field_offset,
+                            space_width=sw,
                             notes=notes,
                         )
                     )
                 else:
                     page.truncated = True
-            self.i += int(len(text) * size * _CHAR_ADVANCE_RATIO)
+            # Advance the pen: non-space glyphs by the flat estimate, spaces
+            # by the SVI width when one is in effect (so a justified line's
+            # later runs still land in the right place).
+            n_space = text.count(" ")
+            glyph_adv = (len(text) - n_space) * size * _CHAR_ADVANCE_RATIO
+            space_adv = n_space * (
+                self.space_increment
+                if self.space_increment is not None
+                else size * _CHAR_ADVANCE_RATIO
+            )
+            self.i += int(glyph_adv + space_adv)
         elif t == 0xE4 and len(p) >= 2:  # DIR: horizontal rule
             self._add_rule(page, p, axis="I")
         elif t == 0xE6 and len(p) >= 2:  # DBR: vertical rule
@@ -776,7 +850,8 @@ def _estimate_font_sizes(page: Page, known_fonts: Dict[int, FontInfo]) -> None:
     that font's character width — and Latin text averages roughly half
     the point size.
     """
-    sized = {fid for fid, info in known_fonts.items() if info.size}
+    sized = {fid for fid, info in known_fonts.items()
+             if info.size or info.size_pt}
     # Clamp to ~4pt..60pt in the page's own resolution.
     lo = max(page.units_per_inch // 18, 4)
     hi = page.units_per_inch * 5 // 6
@@ -1295,13 +1370,17 @@ def extract_pages(
                 # fonts). MDR, if present, already set a better one.
                 sub = (_substitute_font(char_set_typefaces.get(cs_name or "", ""))
                        or _coded_font_substitute(cs_name or ""))
+                # The external char-set name also encodes its point size, the
+                # only size signal when the file embeds no font and has no MDR.
+                size_pt = _coded_font_point_size(cs_name or "")
                 if sub and lid not in fonts:
-                    fonts[lid] = FontInfo(family=sub[0], weight=sub[1])
+                    fonts[lid] = FontInfo(
+                        family=sub[0], weight=sub[1], size_pt=size_pt)
                 elif lid not in fonts and lid not in embedded_text_fonts:
                     # External font whose typeface we can't even infer from the
                     # coded-font name (e.g. C0EXxxxx): register it anyway so the
                     # run is still flagged, drawn in the default Arial.
-                    fonts[lid] = FontInfo()
+                    fonts[lid] = FontInfo(size_pt=size_pt)
                 # Fidelity: flag ids that will draw in a substitute font (i.e.
                 # not via the file's own embedded glyphs) so the viewer can
                 # explain the approximation. Skip ids drawn in real glyphs.
