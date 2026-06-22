@@ -159,6 +159,36 @@ def test_page_to_svg_recolors_glyph_bitmap() -> None:
     assert svg.count(f'filter="url(#{fid})"') == 1
 
 
+def test_embedded_glyph_rotation_sets_transform() -> None:
+    # A non-zero STO orientation tags each glyph image with a page-space
+    # rotation pivoted at the run origin; 90/270 swap the I/B scalars into
+    # page coords (pivot = (b, i)), matching the substitute-text path.
+    emb = _raster_emb_font()
+    page = Page(units_per_inch=240)
+    st = _TextState()
+    st.orientation = 90
+    st.i, st.b = 300, 400
+    assert st._emit_embedded_glyphs(page, b"\x41", emb, 80) is True
+    assert page.images[-1].rotate == (90, 400, 300)
+
+
+def test_embedded_glyph_upright_has_no_rotation() -> None:
+    emb = _raster_emb_font()
+    page = Page(units_per_inch=240)
+    st = _TextState()  # orientation defaults to 0
+    st.i, st.b = 300, 400
+    st._emit_embedded_glyphs(page, b"\x41", emb, 80)
+    assert page.images[-1].rotate is None
+
+
+def test_page_to_svg_emits_rotate_transform() -> None:
+    png = _glyph_png(b"\xff" * 8, 8, 8)
+    page = Page(units_per_inch=240)
+    page.images.append(ImageRef(x=0, y=0, width=80, height=80, mime="image/png",
+                                data=png, rotate=(90, 400, 300)))
+    assert 'transform="rotate(90 400 300)"' in page_to_svg(page)
+
+
 def test_coded_font_point_size_from_name() -> None:
     # IBM/FOP char-set name: 7th char encodes the size (B=12 … H=18, '0'=10).
     assert _coded_font_point_size("C0H200B0") == 12

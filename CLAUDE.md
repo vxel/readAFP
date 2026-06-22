@@ -317,10 +317,22 @@ local-id→name indirection is not yet handled.
   file has colored embedded raster glyphs, so it's covered by synthetic
   render tests in `test_ptoca.py` (one all-black glyph + an STC color).
 
-  Still open: (a) only 0° orientation for embedded glyphs; (b) small
-  embedded raster fonts could be rendered if upscaled with anti-aliasing
-  rather than nearest-neighbor; (c) the outline path already colored glyphs
-  (`_emit_embedded_outlines` fill) — this brings the raster path to parity.
+  Embedded glyphs now render at **all four STO orientations** (0/90/180/
+  270°), not just 0°. Both emit paths lay glyphs out in the run's local
+  horizontal frame anchored at the page-space origin (`_oriented_origin`
+  swaps the I/B scalars for 90/270, matching the substitute-text path), then
+  tag each `ImageRef`/`VectorGraphic` with a `rotate=(angle, cx, cy)` about
+  that shared origin — one rotation carries both the glyph rotation and the
+  inline direction. `render._rotate_attr` emits the `transform="rotate(...)"`
+  (a `<g>` wrapper for the nested-`<svg>` vector path, since `transform` on
+  `<svg>` is SVG2-only). Verified by an Edge screenshot of the Sample 1
+  title at each orientation, plus a pixel test asserting a 90° block lands
+  below its origin (`test_render_pixels.py`).
+
+  Still open: (a) small embedded raster fonts could be rendered if upscaled
+  with anti-aliasing rather than nearest-neighbor; (b) the outline path
+  already colored glyphs (`_emit_embedded_outlines` fill) — STC/SEC color
+  brought the raster path to parity.
 - FNI character-increment widths are not yet fed into document text
   fitting (render still uses position-anchored width estimation; the
   primary health-coverage sample embeds no fonts, so it cannot benefit).

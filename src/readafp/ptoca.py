@@ -168,6 +168,9 @@ class ImageRef:
     # bitmap untouched (IOCA photos, bar codes).
     recolor: Optional[str] = None
     notes: List[FidelityNote] = field(default_factory=list)
+    # Page-space rotation (angle_deg, cx, cy) for rotated text orientations
+    # (STO 90/180/270). None = upright; the renderer adds a rotate transform.
+    rotate: Optional[tuple] = None
 
 
 @dataclass
@@ -192,6 +195,8 @@ class VectorGraphic:
     width: int   # bounding box in L-units (from OBD Object Area Size)
     height: int
     graphic: GocaGraphic  # SVG fragment in GPS-unit coordinate space
+    # Page-space rotation (angle_deg, cx, cy) for rotated text orientations.
+    rotate: Optional[tuple] = None
 
 
 @dataclass
@@ -580,7 +585,7 @@ class _TextState:
                 or max(page.units_per_inch // 6, 8)
             )
             emb = self.embedded_text_fonts.get(self.font_id)
-            if emb is not None and self.orientation == 0:
+            if emb is not None:
                 drawn = (
                     self._emit_embedded_outlines(page, p, emb, size)
                     if emb.outline_glyphs
@@ -752,7 +757,12 @@ class _TextState:
         if not self._embed_covers(data, emb, emb.glyphs):
             return False
         self._record_embedded_text(page, data, emb, self.i, self.b)
-        x, y = self.i, self.b
+        # Lay the glyphs out in the run's local horizontal frame anchored at
+        # the page-space origin, then rotate every glyph around that shared
+        # origin for STO 90/180/270 — one rotation carries both the glyph
+        # rotation and the inline direction. The origin swaps axes for
+        # 90/270, matching the substitute-text path.
+        ox, oy, rot = self._oriented_origin()
         upi = page.units_per_inch
         # Pattern pel → L-unit. With a known resolution the point-size
         # factors cancel to a plain upi/resolution ratio; otherwise fall
@@ -766,6 +776,7 @@ class _TextState:
         # color recolors the ink (and drops the white box) at render time.
         # Black needs no recolor — the bitmap is already black-on-white.
         recolor = self.color if self.color and self.color != DEFAULT_COLOR else None
+        lx = 0  # inline offset from the origin, along the local +x axis
         for byte in data:
             if len(page.images) >= MAX_RUNS_PER_PAGE:
                 page.truncated = True
@@ -773,7 +784,7 @@ class _TextState:
             gcgid = emb.cp_map.get(byte)
             glyph = emb.glyphs.get(gcgid) if gcgid else None
             if glyph is None:
-                x += default_adv
+                lx += default_adv
                 continue
             inc = getattr(glyph, "char_increment", 0)
             adv = round(inc / 1000 * em) if inc else default_adv
@@ -787,13 +798,13 @@ class _TextState:
                 drop = round(getattr(glyph, "baseline_offset", 0) / 1000 * em)
                 page.images.append(
                     ImageRef(
-                        x=x, y=y - h + drop, width=w, height=h,
+                        x=ox + lx, y=oy - h + drop, width=w, height=h,
                         mime="image/png", data=png, crisp=True,
-                        recolor=recolor,
+                        recolor=recolor, rotate=rot,
                     )
                 )
-            x += max(adv, 1)
-        self.i = x
+            lx += max(adv, 1)
+        self.i += lx
         return True
 
     def _emit_embedded_outlines(
@@ -833,10 +844,11 @@ class _TextState:
             x_design += getattr(glyph, "advance", 0) or space
         if paths:
             fill = self.color or DEFAULT_COLOR
+            ox, oy, rot = self._oriented_origin()
             page.graphics.append(
                 VectorGraphic(
-                    x=self.i,
-                    y=self.b - round(ascent * scale),
+                    x=ox,
+                    y=oy - round(ascent * scale),
                     width=max(1, round(x_design * scale)),
                     height=max(1, round(box_h * scale)),
                     graphic=GocaGraphic(
@@ -844,10 +856,27 @@ class _TextState:
                         gps_w=max(1, round(x_design)),
                         gps_h=box_h,
                     ),
+                    rotate=rot,
                 )
             )
         self.i += round(x_design * scale)
         return True
+
+    def _oriented_origin(self) -> tuple:
+        """Page-space run origin and rotation for the current STO orientation.
+
+        Returns ``(ox, oy, rot)`` where glyphs are laid out from ``(ox, oy)``
+        along the local +x axis and ``rot`` is ``(angle, ox, oy)`` (or None at
+        0°). For 90°/270° the inline axis is vertical, so the I/B scalars swap
+        into page coordinates — the same convention as the substitute-text
+        path, so embedded and substitute runs rotate identically.
+        """
+        o = self.orientation
+        if o in (90, 270):
+            ox, oy = self.b, self.i
+        else:
+            ox, oy = self.i, self.b
+        return ox, oy, ((o, ox, oy) if o else None)
 
 
 def _estimate_font_sizes(page: Page, known_fonts: Dict[int, FontInfo]) -> None:

@@ -89,3 +89,19 @@ def test_uncolored_glyph_stays_black() -> None:
     r, g, b, a = center
     assert a > 200 and r < 70 and g < 70 and b < 70, \
         f"uncolored glyph should be black, got {center}"
+
+
+def test_rotated_glyph_renders_in_rotated_position() -> None:
+    # STO 90 is a clockwise rotation about the run origin: a block placed to
+    # the RIGHT of the pivot (100,100) must render BELOW it. This is the
+    # geometry only a real engine resolves — markup can't confirm direction.
+    png = _glyph_png(b"\xff" * 8, 8, 8)  # solid block
+    page = Page(width=200, height=200, units_per_inch=240)
+    page.images.append(ImageRef(x=110, y=85, width=30, height=30,
+                                mime="image/png", data=png, crisp=True,
+                                rotate=(90, 100, 100)))
+    below, right = _sample(page, [(100, 125), (125, 100)])
+    assert below[3] > 200 and below[0] < 70, \
+        f"rotated block should land below the origin, got {below}"
+    assert right[:3] == [255, 255, 255], \
+        f"the un-rotated location should be empty, got {right}"

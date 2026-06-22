@@ -91,6 +91,14 @@ def _glyph_ink_filters(page) -> str:
     return "".join(defs)
 
 
+def _rotate_attr(rotate) -> str:
+    """A ``transform="rotate(angle cx cy)"`` attribute, or "" when upright."""
+    if not rotate:
+        return ""
+    angle, cx, cy = rotate
+    return f' transform="rotate({angle} {cx} {cy})"'
+
+
 def _image_markup(img: ImageRef) -> str:
     """One placed image: a plain <image>, or a CMYK plane composite."""
     box = (
@@ -98,12 +106,13 @@ def _image_markup(img: ImageRef) -> str:
         f'height="{img.height}" preserveAspectRatio="xMidYMid meet"'
     )
     fid = _fidelity_attr(img.notes)
+    xf = _rotate_attr(img.rotate)
     if not img.bands:
         b64 = base64.b64encode(img.data).decode("ascii")
         crisp = ' style="image-rendering:pixelated"' if img.crisp else ""
         ink = f' filter="url(#{_glyph_ink_id(img.recolor)})"' if img.recolor else ""
         return (
-            f'<image {box}{crisp}{ink}{fid} '
+            f'<image {box}{crisp}{ink}{xf}{fid} '
             f'href="data:{img.mime};base64,{b64}"/>'
         )
     parts = [f'<g style="isolation:isolate"{fid}>']
@@ -180,12 +189,16 @@ def _word_spacing(run) -> str:
 def _vector_graphic_markup(vg: VectorGraphic) -> str:
     """Nested <svg> that maps GPS coordinates to L-unit page space."""
     g = vg.graphic
-    return (
+    inner = (
         f'<svg x="{vg.x}" y="{vg.y}" width="{vg.width}" height="{vg.height}" '
         f'viewBox="0 0 {g.gps_w} {g.gps_h}" overflow="hidden">'
         f"{g.svg}"
         f"</svg>"
     )
+    # Wrap in a <g> for rotation — transform on <svg> is SVG2-only, but <g>
+    # works everywhere.
+    xf = _rotate_attr(vg.rotate)
+    return f"<g{xf}>{inner}</g>" if xf else inner
 
 
 def page_to_svg(page: Page) -> str:
