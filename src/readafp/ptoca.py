@@ -510,8 +510,13 @@ class _TextState:
         codepage: str = "cp500",
         font_codepages: Optional[Dict[int, str]] = None,
         embedded_text_fonts: Optional[Dict[int, _EmbeddedFont]] = None,
+        embed_small_fonts: bool = False,
     ) -> None:
         self.codepage = codepage
+        # When True, small embedded raster fonts (below the display-size gate)
+        # are still drawn in the document's own glyphs, anti-aliased, instead
+        # of falling back to a substitute font.
+        self.embed_small_fonts = embed_small_fonts
         # Coded fonts whose code page and glyphs are embedded in the file,
         # so their text can be drawn in the document's own raster font.
         self.embedded_text_fonts = (
@@ -750,10 +755,15 @@ class _TextState:
         without drawing when the font is too small for crisp bitmaps or too
         few bytes resolve, so the caller can substitute the whole run.
         """
-        # Small raster fonts look rough scaled down; only large display
-        # fonts (titles/headings) render as bitmaps, the rest substitute.
-        if emb.point_size < _EMBED_MIN_POINT_SIZE:
+        # Small raster fonts look rough scaled down; by default only large
+        # display fonts (titles/headings) render as bitmaps and the rest
+        # substitute. With embed_small_fonts on, small fonts are drawn too —
+        # anti-aliased (crisp=False) rather than nearest-neighbor, so the
+        # downscaled 1-bit shapes don't read as blocky.
+        small = emb.point_size < _EMBED_MIN_POINT_SIZE
+        if small and not self.embed_small_fonts:
             return False
+        crisp = not small
         if not self._embed_covers(data, emb, emb.glyphs):
             return False
         self._record_embedded_text(page, data, emb, self.i, self.b)
@@ -799,7 +809,7 @@ class _TextState:
                 page.images.append(
                     ImageRef(
                         x=ox + lx, y=oy - h + drop, width=w, height=h,
-                        mime="image/png", data=png, crisp=True,
+                        mime="image/png", data=png, crisp=crisp,
                         recolor=recolor, rotate=rot,
                     )
                 )
@@ -1154,7 +1164,8 @@ def _scan_code_pages(fields: List[StructuredField]) -> Dict[str, Dict[int, str]]
 
 
 def extract_pages(
-    fields: List[StructuredField], codepage: str = "cp500"
+    fields: List[StructuredField], codepage: str = "cp500",
+    embed_small_fonts: bool = False,
 ) -> List[Page]:
     """Walk a parsed document and build a rough page model per BPG...EPG.
 
@@ -1346,7 +1357,8 @@ def extract_pages(
             current = Page()
             if pgd_default:
                 current.width, current.height, current.units_per_inch = pgd_default
-            state = _TextState(fonts, codepage, font_codepages, embedded_text_fonts)
+            state = _TextState(fonts, codepage, font_codepages, embedded_text_fonts,
+                                 embed_small_fonts)
             in_overlay = True
             overlay_name = (f.token_name or "").strip()
         elif f.sf_id == 0xD3A9DF:  # EMO: store the captured overlay by name
@@ -1359,7 +1371,8 @@ def extract_pages(
             current = Page()
             if pgd_default:
                 current.width, current.height, current.units_per_inch = pgd_default
-            state = _TextState(fonts, codepage, font_codepages, embedded_text_fonts)
+            state = _TextState(fonts, codepage, font_codepages, embedded_text_fonts,
+                                 embed_small_fonts)
         elif f.sf_id == 0xD3A9AF:  # EPG
             if current is not None:
                 _estimate_font_sizes(current, fonts)
@@ -1466,7 +1479,8 @@ def extract_pages(
                             implicit.height,
                             implicit.units_per_inch,
                         ) = pgd_default
-                    implicit_state = _TextState(fonts, codepage, font_codepages, embedded_text_fonts)
+                    implicit_state = _TextState(fonts, codepage, font_codepages, embedded_text_fonts,
+                                 embed_small_fonts)
                     implicit_state.wrap_width = implicit.width - 480
                     implicit_state.i = 240
                     implicit_state.b = 320

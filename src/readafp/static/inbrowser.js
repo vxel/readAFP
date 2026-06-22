@@ -71,7 +71,7 @@
 
   var RENDER =
     "import jinja2, readafp.app as A\n" +
-    "_ctx = A.build_context(bytes(FILE_BYTES.to_py()), FILE_NAME, FILE_CP)\n" +
+    "_ctx = A.build_context(bytes(FILE_BYTES.to_py()), FILE_NAME, FILE_CP, FILE_EMBED)\n" +
     "_env = jinja2.Environment(loader=jinja2.FileSystemLoader('readafp/templates'), autoescape=True)\n" +
     "_env.globals['url_for'] = lambda endpoint, **k: ('/static/' + k.get('filename','')) if endpoint=='static' else '/'\n" +
     "_env.get_template('index.html').render(**_ctx)\n";
@@ -83,6 +83,8 @@
     var file = fileInput.files[0];
     var sel = form.querySelector('select[name=codepage]');
     var cp = sel ? sel.value : "cp500";
+    var embedBox = form.querySelector('input[name=embed_small_fonts]');
+    var embed = !!(embedBox && embedBox.checked);
     try {
       var py = await ensurePyodide();
       overlay("Reading your file locally…");
@@ -90,6 +92,7 @@
       py.globals.set("FILE_BYTES", bytes);
       py.globals.set("FILE_NAME", file.name);
       py.globals.set("FILE_CP", cp);
+      py.globals.set("FILE_EMBED", embed);
       var html = await py.runPythonAsync(RENDER);
       document.open();
       document.write(html);

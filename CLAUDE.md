@@ -305,13 +305,27 @@ both (`id N → NAME` for MPO, `overlay 'NAME' @ offset x,y` for IPO).
 
   **Size gate** (`_EMBED_MIN_POINT_SIZE`, 20pt): raster glyphs are 1-bit
   bitmaps — crisp at display sizes but thin and aliased once a small body
-  font is scaled down to screen. So `_emit_embedded_glyphs` only draws them
-  for large fonts (titles/headings) and lets smaller text fall back to a
-  clean substitute font. On Sample 1 this renders the 60pt "GNU Troff"
-  title and a 28pt heading in real embedded TIMES-ROMAN, while the 10pt
-  body stays substitute — the readable hybrid (verified by Playwright
+  font is scaled down to screen. So by default `_emit_embedded_glyphs` only
+  draws them for large fonts (titles/headings) and lets smaller text fall
+  back to a clean substitute font. On Sample 1 this renders the 60pt "GNU
+  Troff" title and a 28pt heading in real embedded TIMES-ROMAN, while the
+  10pt body stays substitute — the readable hybrid (verified by Playwright
   screenshot). Two earlier all-or-nothing attempts (rendering *all* body
-  text as bitmaps) were backed out for looking worse than substitute.
+  text as bitmaps, nearest-neighbor) were backed out for looking worse than
+  substitute.
+
+  **`embed_small_fonts` opt-in** (off by default): a UI checkbox ("Small
+  text in embedded font") threaded through `build_context` →
+  `extract_pages` → `_TextState`. When on, small fonts ARE drawn in the
+  document's own glyphs but **anti-aliased** (`crisp=False`) rather than
+  nearest-neighbor, so the downscaled 1-bit shapes don't read as blocky;
+  large fonts stay crisp. Default-off preserves the safe substitute body
+  (per the backout history), but on some files "on" is strictly better — on
+  Sample 1 the substitute+external-codepage path garbles/drops body
+  characters ("te xt", stray â) while the embedded path renders the real
+  monospace text complete and correctly spaced (verified by Edge
+  screenshot). Wired into the in-browser path too (`inbrowser.js` passes the
+  flag to `build_context`).
 
   Embedded raster glyphs now honor **STC/SEC text color**: a non-default
   color sets `ImageRef.recolor` and `render._glyph_ink_filters` emits one
@@ -338,10 +352,11 @@ both (`id N → NAME` for MPO, `overlay 'NAME' @ offset x,y` for IPO).
   title at each orientation, plus a pixel test asserting a 90° block lands
   below its origin (`test_render_pixels.py`).
 
-  Still open: (a) small embedded raster fonts could be rendered if upscaled
-  with anti-aliasing rather than nearest-neighbor; (b) the outline path
-  already colored glyphs (`_emit_embedded_outlines` fill) — STC/SEC color
-  brought the raster path to parity.
+  Small embedded raster fonts can now be rendered anti-aliased via the
+  `embed_small_fonts` opt-in (see above), closing the old "upscale with
+  anti-aliasing rather than nearest-neighbor" item. The outline path already
+  colored glyphs (`_emit_embedded_outlines` fill) — STC/SEC color brought
+  the raster path to parity.
 - FNI character-increment widths are not yet fed into document text
   fitting (render still uses position-anchored width estimation; the
   primary health-coverage sample embeds no fonts, so it cannot benefit).

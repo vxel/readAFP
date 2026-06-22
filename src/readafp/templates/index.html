@@ -322,6 +322,10 @@
         <option value="{{ value }}"{{ " selected" if value == codepage }}>{{ label }}</option>
         {% endfor %}
       </select>
+      <label class="agree-label" title="Draw small embedded raster fonts in the document's own glyphs (anti-aliased) instead of a substitute font. Off by default — substitute fonts are sharper for body text.">
+        <input type="checkbox" name="embed_small_fonts"{{ " checked" if embed_small_fonts }}>
+        <span>Small text in embedded font</span>
+      </label>
       <label class="agree-label" title="Uploaded files are processed in-memory and not stored on the server">
         <input type="checkbox" name="agree" required>
         <span>I agree — <button type="button" class="link-btn" id="agree-terms">terms</button></span>

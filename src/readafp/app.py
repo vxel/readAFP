@@ -226,6 +226,7 @@ def create_app():
         codepage = request.form.get("codepage", "cp500")
         if codepage not in {name for name, _ in CODEPAGES}:
             codepage = "cp500"
+        embed_small_fonts = request.form.get("embed_small_fonts") is not None
         upload = request.files.get("afpfile")
         if upload is None or not upload.filename:
             return render_template(
@@ -235,8 +236,10 @@ def create_app():
                 codepages=CODEPAGES,
                 codepage=codepage,
                 samples=SAMPLES,
+                embed_small_fonts=embed_small_fonts,
             )
-        ctx = build_context(upload.read(), upload.filename, codepage)
+        ctx = build_context(
+            upload.read(), upload.filename, codepage, embed_small_fonts)
         return render_template("index.html", **ctx)
 
     @app.get("/inspect-sample/<name>")
@@ -288,16 +291,23 @@ def _safe_codepage(codepage: str) -> str:
     return codepage if codepage in {n for n, _ in CODEPAGES} else "cp500"
 
 
-def build_context(data: bytes, filename: str, codepage: str) -> Dict[str, Any]:
+def build_context(
+    data: bytes, filename: str, codepage: str,
+    embed_small_fonts: bool = False,
+) -> Dict[str, Any]:
     """Parse AFP bytes into the full template context (Flask-free).
 
     Returns the dict of template variables for index.html — used by the
     server routes (via render_template) and by the in-browser Pyodide build
     (which renders the same template client-side). No Flask, no I/O.
+
+    ``embed_small_fonts`` opts small embedded raster fonts into being drawn
+    in the document's own glyphs (anti-aliased) instead of substituted.
     """
     codepage = _safe_codepage(codepage)
     base: Dict[str, Any] = {
         "codepages": CODEPAGES, "codepage": codepage, "samples": SAMPLES,
+        "embed_small_fonts": embed_small_fonts,
     }
     try:
         parsed = list(iter_fields(data))
@@ -307,7 +317,7 @@ def build_context(data: bytes, filename: str, codepage: str) -> Dict[str, Any]:
                 "error": f"Not a valid AFP file: {exc}"}
     fields = _field_rows(parsed)
     summary = Counter(row["name"] for row in fields)
-    pages = extract_pages(parsed, codepage)
+    pages = extract_pages(parsed, codepage, embed_small_fonts)
     bracketed = sum(1 for row in fields if row["sf_id"] == "0xD3A8AF")
     if len(pages) > bracketed:  # loose PTX flowed onto implicit pages
         src_to_page: dict = {}

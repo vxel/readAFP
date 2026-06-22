@@ -107,8 +107,12 @@ def test_lone_substitute_is_not_flagged() -> None:
     assert page.texts and not _dropped_note(page.texts[0])
 
 
-def _raster_emb_font() -> _EmbeddedFont:
-    """A minimal embedded raster font: one all-black 8x8 glyph for byte 'A'."""
+def _raster_emb_font(point_size: float = 24.0) -> _EmbeddedFont:
+    """A minimal embedded raster font: one all-black 8x8 glyph for byte 'A'.
+
+    Default 24pt is above the 20pt display gate; pass a smaller size to
+    exercise the small-font path.
+    """
     png = _glyph_png(b"\xff" * 8, 8, 8)  # all pels toned -> all-black bitmap
     glyph = Glyph(gcgid="LA010000", width=8, height=8, char_increment=500,
                   png=png, baseline_offset=0)
@@ -117,7 +121,7 @@ def _raster_emb_font() -> _EmbeddedFont:
         glyphs={"LA010000": glyph},
         ref_height=8,
         resolution=300,
-        point_size=24.0,  # above the 20pt display gate
+        point_size=point_size,
     )
 
 
@@ -187,6 +191,39 @@ def test_page_to_svg_emits_rotate_transform() -> None:
     page.images.append(ImageRef(x=0, y=0, width=80, height=80, mime="image/png",
                                 data=png, rotate=(90, 400, 300)))
     assert 'transform="rotate(90 400 300)"' in page_to_svg(page)
+
+
+def test_small_embedded_font_substitutes_by_default() -> None:
+    # Below the 20pt display gate and embed_small_fonts off: don't draw the
+    # bitmaps (caller falls back to a substitute font).
+    emb = _raster_emb_font(point_size=10.0)
+    page = Page(units_per_inch=240)
+    st = _TextState()
+    st.i, st.b = 300, 400
+    assert st._emit_embedded_glyphs(page, b"\x41", emb, 30) is False
+    assert page.images == []
+
+
+def test_small_embedded_font_drawn_antialiased_when_enabled() -> None:
+    # With embed_small_fonts on, a small font IS drawn — anti-aliased
+    # (crisp=False) so the downscaled 1-bit shapes don't read as blocky.
+    emb = _raster_emb_font(point_size=10.0)
+    page = Page(units_per_inch=240)
+    st = _TextState(embed_small_fonts=True)
+    st.i, st.b = 300, 400
+    assert st._emit_embedded_glyphs(page, b"\x41", emb, 30) is True
+    assert page.images and page.images[-1].crisp is False
+
+
+def test_large_embedded_font_stays_crisp() -> None:
+    # Display-size fonts render as crisp (nearest-neighbor) bitmaps as before,
+    # regardless of the small-font option.
+    emb = _raster_emb_font(point_size=24.0)
+    page = Page(units_per_inch=240)
+    st = _TextState()
+    st.i, st.b = 300, 400
+    assert st._emit_embedded_glyphs(page, b"\x41", emb, 80) is True
+    assert page.images[-1].crisp is True
 
 
 def test_coded_font_point_size_from_name() -> None:
