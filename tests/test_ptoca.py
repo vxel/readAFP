@@ -515,6 +515,91 @@ def test_cs_afp_overlay_resource_renders() -> None:
     assert "Simplify" in pages[0].plain_text
 
 
+def _mpo_bytes(local_id: int, name: str) -> bytes:
+    # One repeating group: a Resource Local Identifier (X'24') triplet and a
+    # Fully Qualified Name (X'02') triplet, prefixed by the 2-byte RG length.
+    t24 = bytes([4, 0x24, 0x02, local_id])
+    fqn = b"\x84\x00" + name.encode("cp500")
+    t02 = bytes([len(fqn) + 2, 0x02]) + fqn
+    rg = t24 + t02
+    return (len(rg) + 2).to_bytes(2, "big") + rg
+
+
+def _ipo_id_bytes(local_id: int, x: int, y: int) -> bytes:
+    # IPO referencing the overlay by MPO local id: a single id byte, the rest
+    # of the 8-byte field zero, then the X/Y offsets.
+    return (bytes([local_id]) + b"\x00" * 7
+            + x.to_bytes(3, "big", signed=True)
+            + y.to_bytes(3, "big", signed=True))
+
+
+def test_parse_mpo_from_corpus_file() -> None:
+    # The real Map Page Overlay field maps local id 1 to overlay "O1VORNAL".
+    from readafp.ptoca import _parse_mpo
+    sample = TESTDATA / "alpheus-corpus" / "external" / "afplib_start.afp"
+    if not sample.exists():
+        pytest.skip("afplib_start.afp not present")
+    mpo = next(f for f in iter_fields(sample.read_bytes())
+               if f.sf_id == 0xD3ABD8)
+    assert _parse_mpo(mpo.data) == {1: "O1VORNAL"}
+
+
+def test_overlay_included_by_mpo_local_id() -> None:
+    # The page's IPO references the overlay by MPO local id (5), not by name;
+    # MPO resolves id 5 -> FORM1 and the overlay composites with the offset.
+    ov = (
+        bytes.fromhex("2bd3")
+        + bytes([4, 0xC7]) + b"\x02\xbc"          # AMI 700
+        + bytes([4, 0xD3]) + b"\x03\x20"          # AMB 800
+        + bytes([2 + 4, 0xDA]) + "FORM".encode("cp500")
+    )
+    body = (
+        bytes.fromhex("2bd3")
+        + bytes([4, 0xC7]) + b"\x07\xd0"          # AMI 2000
+        + bytes([4, 0xD3]) + b"\x0b\xb8"          # AMB 3000
+        + bytes([2 + 4, 0xDA]) + "BODY".encode("cp500")
+    )
+    doc = (
+        _sf(0xD3A8A8)
+        + _sf(0xD3A8DF, _ebc("FORM1"))             # BMO
+        + _sf(0xD3EE9B, ov)                        # overlay PTX
+        + _sf(0xD3A9DF, _ebc("FORM1"))             # EMO
+        + _sf(0xD3ABD8, _mpo_bytes(5, "FORM1"))    # MPO: id 5 -> FORM1
+        + _sf(0xD3A8AF)                            # BPG
+        + _sf(0xD3AFD8, _ipo_id_bytes(5, 100, 200))  # IPO by local id
+        + _sf(0xD3EE9B, body)                      # page PTX
+        + _sf(0xD3A9AF)                            # EPG
+        + _sf(0xD3A9A8)
+    )
+    pages = extract_pages(list(iter_fields(doc)))
+    assert len(pages) == 1
+    texts = {t.text: (t.x, t.y) for t in pages[0].texts}
+    assert texts["BODY"] == (2000, 3000)
+    assert texts["FORM"] == (800, 1000)  # 700+100, 800+200
+
+
+def test_unmapped_mpo_id_composites_nothing() -> None:
+    # An IPO id with no MPO mapping (and no matching name) draws nothing —
+    # the resolver never fabricates an overlay.
+    doc = (
+        _sf(0xD3A8A8)
+        + _sf(0xD3A8DF, _ebc("FORM1"))
+        + _sf(0xD3EE9B, bytes.fromhex("2bd3") + bytes([2 + 4, 0xDA])
+              + "FORM".encode("cp500"))
+        + _sf(0xD3A9DF, _ebc("FORM1"))
+        + _sf(0xD3ABD8, _mpo_bytes(5, "FORM1"))
+        + _sf(0xD3A8AF)
+        + _sf(0xD3AFD8, _ipo_id_bytes(9, 0, 0))    # id 9 is unmapped
+        + _sf(0xD3EE9B, bytes.fromhex("2bd3") + bytes([2 + 4, 0xDA])
+              + "BODY".encode("cp500"))
+        + _sf(0xD3A9AF)
+        + _sf(0xD3A9A8)
+    )
+    pages = extract_pages(list(iter_fields(doc)))
+    assert "FORM" not in pages[0].plain_text
+    assert "BODY" in pages[0].plain_text
+
+
 def test_real_overlay_text_lands_on_page() -> None:
     sample = TESTDATA / "alpheus-corpus" / "external" / "afplib_ende.afp"
     if not sample.exists():

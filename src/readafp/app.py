@@ -549,6 +549,20 @@ def _field_data_summary(
                 f"AreaRot={b(8, 10) // 128},{b(10, 12) // 128} "
                 f"ContentPos={b(13, 16)},{b(16, 19)} "
                 f"ContentRot={b(19, 21) // 128},{b(21, 23) // 128}")
+    if field.sf_id == 0xD3ABD8:  # MPO (Map Page Overlay)
+        from readafp.ptoca import _parse_mpo
+        mapping = _parse_mpo(field.data)
+        if mapping:
+            return "; ".join(f"id {i} → {n}" for i, n in mapping.items())
+    if field.sf_id == 0xD3AFD8 and len(field.data) >= 8:  # IPO (Include Page Ovly)
+        d = field.data
+        try:
+            ref = d[:8].decode("cp500").strip()
+        except UnicodeDecodeError:
+            ref = d[:8].hex()
+        ox = int.from_bytes(d[8:11], "big", signed=True) if len(d) >= 11 else 0
+        oy = int.from_bytes(d[11:14], "big", signed=True) if len(d) >= 14 else 0
+        return f"overlay {ref!r} @ offset {ox},{oy}"
     if field.sf_id == 0xD38C89 and font_fnc:  # FNI (Font Index)
         rg = font_fnc[15] if len(font_fnc) > 15 else 28
         if rg >= 8:

@@ -241,8 +241,17 @@ EBCDIC name. A page's `IPO` (Include Page Overlay) field then composites
 that overlay's text/rules/images/graphics onto the page via
 `_include_overlay()`, shifted by the IPO X/Y offset (name = 8 EBCDIC
 bytes + 3+3 signed offset) and scaled if the overlay declared a
-different resolution. IPO references the overlay by name directly; MPO
-local-id→name indirection is not yet handled.
+different resolution. IPO normally references the overlay by its 8-byte
+name; `_parse_mpo` decodes the **MPO** (Map Page Overlay) field into a
+`{local id: name}` map (per repeating group: X'24' Resource Local Id +
+X'02' FQN name), and `_resolve_overlay` falls back to it when the IPO field
+is a single non-space/non-zero byte (a local id) rather than a name —
+resolving only to an overlay actually captured in the file, so a stray id
+can never fabricate content. No corpus file references an overlay by id
+(the two MPO files, `alpheus-corpus/external/afplib_{start,ende}.afp`, use
+IPO-by-name and the MPO is redundant), so the by-id path is exercised by
+unit tests, same posture as TLE. The inspector's field-data column shows
+both (`id N → NAME` for MPO, `overlay 'NAME' @ offset x,y` for IPO).
 
 ## What's Not Yet Implemented
 
@@ -336,7 +345,10 @@ local-id→name indirection is not yet handled.
 - FNI character-increment widths are not yet fed into document text
   fitting (render still uses position-anchored width estimation; the
   primary health-coverage sample embeds no fonts, so it cannot benefit).
-- MPO (Map Page Overlay) local-id indirection — IPO-by-id files unhandled.
+- MPO (Map Page Overlay) local-id indirection — done: `_parse_mpo` +
+  `_resolve_overlay` resolve an IPO that references an overlay by MPO local
+  id (see Page Overlays above). No corpus file exercises by-id, so it is
+  unit-tested only; the real MPO files use IPO-by-name (already worked).
 - GOCA character-string orders are not implemented. (Partial arcs are
   done: circular-arc sweep direction and rotated-ellipse orientation are
   both verified — `_handle_gparc` derives the ellipse semi-axes, x-axis

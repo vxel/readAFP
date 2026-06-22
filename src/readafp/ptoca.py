@@ -1216,6 +1216,7 @@ def extract_pages(
     loose_images: List[_ImageObject] = []
     resource_name: Optional[str] = None  # enclosing BRS or BPS token
     overlays: Dict[str, Page] = {}  # BMO...EMO content, by name, for IPO
+    mpo_map: Dict[int, str] = {}  # MPO: overlay local id -> name, for IPO-by-id
     in_overlay = False
     overlay_name: Optional[str] = None
     in_image = False
@@ -1337,8 +1338,10 @@ def extract_pages(
             )
             if image is not None:
                 current.images.append(image)
+        elif f.sf_id == 0xD3ABD8:  # MPO: map overlay local id -> name
+            mpo_map.update(_parse_mpo(f.data))
         elif f.sf_id == 0xD3AFD8 and current is not None:  # IPO: place overlay
-            _include_overlay(current, overlays, f.data)
+            _include_overlay(current, overlays, mpo_map, f.data)
         elif f.sf_id == 0xD3A8DF:  # BMO: capture an overlay like a page
             current = Page()
             if pgd_default:
@@ -1510,23 +1513,76 @@ def extract_pages(
     return pages
 
 
-def _include_overlay(
-    page: Page, overlays: Dict[str, Page], ipo: bytes
-) -> None:
-    """Composite a named page overlay onto a page (IPO field).
+def _parse_mpo(data: bytes) -> Dict[int, str]:
+    """Map overlay local id → name from a Map Page Overlay (MPO) field.
 
-    IPO layout: overlay name (8 EBCDIC bytes) then signed 3-byte X and Y
-    offsets, in the including page's L-units. The overlay's text, rules,
-    images and graphics are copied in, shifted by the offset and scaled
-    if the overlay declared a different resolution. Overlay content is
-    appended before the page's own body (IPO precedes it), so it renders
-    underneath like a form or letterhead.
+    MPO is a series of repeating groups, each a 2-byte length then triplets:
+    the Resource Local Identifier triplet (X'24') carries the local id (its
+    last byte) and the Fully Qualified Name triplet (X'02') carries the
+    overlay name (a FQN type/format byte pair then the EBCDIC name). The map
+    lets an IPO reference an overlay by local id instead of by name.
+    """
+    out: Dict[int, str] = {}
+    pos = 0
+    while pos + 2 <= len(data):
+        rg_len = int.from_bytes(data[pos : pos + 2], "big")
+        if rg_len < 2 or pos + rg_len > len(data):
+            break
+        local_id: Optional[int] = None
+        name: Optional[str] = None
+        for tid, tdata in iter_triplets(data[pos + 2 : pos + rg_len]):
+            if tid == 0x24 and tdata:  # Resource Local Identifier
+                local_id = tdata[-1]
+            elif tid == 0x02 and len(tdata) >= 3:  # Fully Qualified Name
+                try:
+                    name = tdata[2:].decode("cp500").strip()
+                except UnicodeDecodeError:
+                    name = None
+        if local_id is not None and name:
+            out[local_id] = name
+        pos += rg_len
+    return out
+
+
+def _resolve_overlay(
+    ref: bytes, overlays: Dict[str, Page], mpo_map: Dict[int, str]
+) -> Optional[Page]:
+    """Find the overlay an IPO references, by name or by MPO local id.
+
+    The reference is normally an 8-EBCDIC-char name. When that doesn't match
+    a captured overlay and the field is instead a single non-space, non-zero
+    byte, it is treated as an MPO local id and resolved through ``mpo_map`` —
+    but only ever to an overlay actually captured in the file, so a stray id
+    can never fabricate content. (No corpus file references by id; the path
+    is exercised by unit tests, like the TLE feature.)
     """
     try:
-        name = ipo[:8].decode("cp500").strip()
+        name = ref[:8].decode("cp500").strip()
     except UnicodeDecodeError:
-        return
-    overlay = overlays.get(name)
+        name = ""
+    if name and name in overlays:
+        return overlays[name]
+    nonblank = [b for b in ref[:8] if b not in (0x00, 0x40)]  # 0x40 = EBCDIC SP
+    if len(nonblank) == 1:
+        mapped = mpo_map.get(nonblank[0])
+        if mapped and mapped in overlays:
+            return overlays[mapped]
+    return None
+
+
+def _include_overlay(
+    page: Page, overlays: Dict[str, Page], mpo_map: Dict[int, str], ipo: bytes
+) -> None:
+    """Composite a page overlay onto a page (IPO field).
+
+    IPO layout: overlay reference (8 EBCDIC bytes — a name, or an MPO local
+    id) then signed 3-byte X and Y offsets, in the including page's L-units.
+    The overlay's text, rules, images and graphics are copied in, shifted by
+    the offset and scaled if the overlay declared a different resolution.
+    Overlay content is appended before the page's own body (IPO precedes it),
+    so it renders underneath like a form or letterhead.
+    """
+    overlay = _resolve_overlay(ipo, overlays, mpo_map)
     if overlay is None:
         return
     ox = int.from_bytes(ipo[8:11], "big", signed=True) if len(ipo) >= 11 else 0
