@@ -63,10 +63,14 @@ def _glyph_ink_id(color: str) -> str:
 def _glyph_ink_filters(page) -> str:
     """<defs> recoloring 1-bit black-on-white glyph bitmaps to a text color.
 
-    Each distinct ``ImageRef.recolor`` gets one filter: feColorMatrix turns
-    the grayscale into an alpha mask (black ink -> opaque, white -> clear),
-    then feFlood + feComposite paints that mask in the target color. The
-    white box disappears, so colored glyphs composite cleanly on the page.
+    Each distinct ``ImageRef.recolor`` gets one filter that turns the ink
+    into a flooded color on a transparent background, in three steps:
+      1. invert RGB (black ink -> white, white box -> black);
+      2. luminanceToAlpha -> an alpha mask opaque over the (now white) ink;
+      3. feFlood the target color, clipped to that mask by feComposite "in".
+    The white box becomes transparent, so colored glyphs composite cleanly
+    over page content. (A single 1-R alpha matrix reads inverted in
+    browsers — the invert + luminanceToAlpha idiom is the reliable one.)
     """
     colors = sorted({img.recolor for img in page.images if img.recolor})
     if not colors:
@@ -77,7 +81,8 @@ def _glyph_ink_filters(page) -> str:
             f'<filter id="{_glyph_ink_id(color)}" '
             f'color-interpolation-filters="sRGB">'
             '<feColorMatrix type="matrix" '
-            'values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -1 0 0 0 1" result="m"/>'
+            'values="-1 0 0 0 1  0 -1 0 0 1  0 0 -1 0 1  0 0 0 1 0"/>'
+            '<feColorMatrix type="luminanceToAlpha" result="m"/>'
             f'<feFlood flood-color={quoteattr(color)} result="c"/>'
             '<feComposite in="c" in2="m" operator="in"/>'
             "</filter>"

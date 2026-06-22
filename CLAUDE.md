@@ -307,12 +307,15 @@ local-id→name indirection is not yet handled.
   Embedded raster glyphs now honor **STC/SEC text color**: a non-default
   color sets `ImageRef.recolor` and `render._glyph_ink_filters` emits one
   SVG filter per color that turns the 1-bit black-on-white bitmap into the
-  ink color on a transparent background (`feColorMatrix` builds an alpha
-  mask `1 − R`, then `feFlood` + `feComposite operator="in"` paints it) —
-  which also drops the white box so colored glyphs composite cleanly. Black
-  needs no filter (the bitmap is already black-on-white). No corpus file has
-  colored embedded raster glyphs, so it's covered by synthetic render tests
-  in `test_ptoca.py` (one all-black glyph + an STC color).
+  ink color on a transparent background: invert RGB, then `luminanceToAlpha`
+  for a mask opaque over the ink, then `feFlood` the color clipped by
+  `feComposite operator="in"` — which also drops the white box so colored
+  glyphs composite cleanly. (A lone `1 − R` alpha matrix reads inverted in
+  browsers; the invert + luminanceToAlpha idiom is the reliable one,
+  confirmed by an Edge screenshot of the Sample 1 60pt title recolored.)
+  Black needs no filter (the bitmap is already black-on-white). No corpus
+  file has colored embedded raster glyphs, so it's covered by synthetic
+  render tests in `test_ptoca.py` (one all-black glyph + an STC color).
 
   Still open: (a) only 0° orientation for embedded glyphs; (b) small
   embedded raster fonts could be rendered if upscaled with anti-aliasing
