@@ -55,6 +55,37 @@ _INK_FILTERS = (
 )
 
 
+def _glyph_ink_id(color: str) -> str:
+    """A filter id unique to one recolor value (sanitized hex)."""
+    return "glyphink-" + "".join(ch for ch in color if ch.isalnum())
+
+
+def _glyph_ink_filters(page) -> str:
+    """<defs> recoloring 1-bit black-on-white glyph bitmaps to a text color.
+
+    Each distinct ``ImageRef.recolor`` gets one filter: feColorMatrix turns
+    the grayscale into an alpha mask (black ink -> opaque, white -> clear),
+    then feFlood + feComposite paints that mask in the target color. The
+    white box disappears, so colored glyphs composite cleanly on the page.
+    """
+    colors = sorted({img.recolor for img in page.images if img.recolor})
+    if not colors:
+        return ""
+    defs = ["<defs>"]
+    for color in colors:
+        defs.append(
+            f'<filter id="{_glyph_ink_id(color)}" '
+            f'color-interpolation-filters="sRGB">'
+            '<feColorMatrix type="matrix" '
+            'values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -1 0 0 0 1" result="m"/>'
+            f'<feFlood flood-color={quoteattr(color)} result="c"/>'
+            '<feComposite in="c" in2="m" operator="in"/>'
+            "</filter>"
+        )
+    defs.append("</defs>")
+    return "".join(defs)
+
+
 def _image_markup(img: ImageRef) -> str:
     """One placed image: a plain <image>, or a CMYK plane composite."""
     box = (
@@ -65,7 +96,11 @@ def _image_markup(img: ImageRef) -> str:
     if not img.bands:
         b64 = base64.b64encode(img.data).decode("ascii")
         crisp = ' style="image-rendering:pixelated"' if img.crisp else ""
-        return f'<image {box}{crisp}{fid} href="data:{img.mime};base64,{b64}"/>'
+        ink = f' filter="url(#{_glyph_ink_id(img.recolor)})"' if img.recolor else ""
+        return (
+            f'<image {box}{crisp}{ink}{fid} '
+            f'href="data:{img.mime};base64,{b64}"/>'
+        )
     parts = [f'<g style="isolation:isolate"{fid}>']
     for ink, blob in zip("cmyk", img.bands):
         b64 = base64.b64encode(blob).decode("ascii")
@@ -159,6 +194,7 @@ def page_to_svg(page: Page) -> str:
     ]
     if any(img.bands for img in page.images):
         parts.append(_INK_FILTERS)
+    parts.append(_glyph_ink_filters(page))
     for rule in page.rules:
         # Rules extend from the current position in the +I/+B direction
         # (negative length or width extends the other way).

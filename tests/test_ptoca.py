@@ -7,15 +7,18 @@ import pytest
 from readafp.parser import iter_fields, parse_file
 from readafp.ptoca import (
     ControlSequence,
+    ImageRef,
     Page,
     extract_pages,
     iter_control_sequences,
     parse_mdr_fonts,
+    _EmbeddedFont,
     _TextState,
     _coded_font_point_size,
     _decode_trn,
 )
-from readafp.render import page_to_svg
+from readafp.foca import Glyph, _glyph_png
+from readafp.render import _glyph_ink_id, page_to_svg
 
 TESTDATA = Path(__file__).parent.parent / "testdata"
 HEALTH_SAMPLE = TESTDATA / "sample1_health" / "01_Health_Coverage.afp"
@@ -102,6 +105,58 @@ def test_lone_substitute_is_not_flagged() -> None:
     for cs in iter_control_sequences(data):
         state.apply(cs, page)
     assert page.texts and not _dropped_note(page.texts[0])
+
+
+def _raster_emb_font() -> _EmbeddedFont:
+    """A minimal embedded raster font: one all-black 8x8 glyph for byte 'A'."""
+    png = _glyph_png(b"\xff" * 8, 8, 8)  # all pels toned -> all-black bitmap
+    glyph = Glyph(gcgid="LA010000", width=8, height=8, char_increment=500,
+                  png=png, baseline_offset=0)
+    return _EmbeddedFont(
+        cp_map={0x41: "LA010000"},
+        glyphs={"LA010000": glyph},
+        ref_height=8,
+        resolution=300,
+        point_size=24.0,  # above the 20pt display gate
+    )
+
+
+def test_embedded_glyph_applies_stc_color() -> None:
+    # A non-default STC/SEC color recolors the 1-bit glyph bitmap; the run's
+    # decoded text is still recorded for export.
+    emb = _raster_emb_font()
+    page = Page(units_per_inch=240)
+    state = _TextState()
+    state.color = "#ff0000"
+    assert state._emit_embedded_glyphs(page, b"\x41", emb, 80) is True
+    assert page.images and page.images[-1].recolor == "#ff0000"
+
+
+def test_embedded_glyph_black_is_not_recolored() -> None:
+    # Default black needs no filter — the bitmap is already black-on-white.
+    emb = _raster_emb_font()
+    page = Page(units_per_inch=240)
+    state = _TextState()  # color defaults to black
+    assert state._emit_embedded_glyphs(page, b"\x41", emb, 80) is True
+    assert page.images and page.images[-1].recolor is None
+
+
+def test_page_to_svg_recolors_glyph_bitmap() -> None:
+    # A recolored glyph image gets a flood/composite filter keyed to its color;
+    # a plain image (recolor None) is left untouched.
+    png = _glyph_png(b"\xff" * 8, 8, 8)
+    page = Page(units_per_inch=240)
+    page.images.append(ImageRef(x=0, y=0, width=80, height=80, mime="image/png",
+                                data=png, crisp=True, recolor="#ff0000"))
+    page.images.append(ImageRef(x=0, y=0, width=80, height=80, mime="image/png",
+                                data=png, crisp=True))
+    svg = page_to_svg(page)
+    fid = _glyph_ink_id("#ff0000")
+    assert f'<filter id="{fid}"' in svg
+    assert 'flood-color="#ff0000"' in svg
+    assert f'filter="url(#{fid})"' in svg
+    # Exactly one image references the filter (the recolored one).
+    assert svg.count(f'filter="url(#{fid})"') == 1
 
 
 def test_coded_font_point_size_from_name() -> None:

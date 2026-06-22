@@ -162,6 +162,11 @@ class ImageRef:
     bands: Optional[List[bytes]] = None
     # Scale without smoothing (bar code symbols: one pixel per module).
     crisp: bool = False
+    # Recolor a 1-bit black-on-white glyph bitmap to this hex color (ink
+    # becomes the color, the white background becomes transparent). Set for
+    # embedded raster glyphs carrying an STC/SEC text color; None leaves the
+    # bitmap untouched (IOCA photos, bar codes).
+    recolor: Optional[str] = None
     notes: List[FidelityNote] = field(default_factory=list)
 
 
@@ -757,6 +762,10 @@ class _TextState:
         # Em → L-unit, for the 1000/em character increments.
         em = round(emb.point_size / 72 * upi) if emb.point_size else size
         default_adv = max(1, round(0.5 * em))  # advance for an unmapped byte
+        # Honor an STC/SEC text color on the 1-bit glyph bitmaps: a non-default
+        # color recolors the ink (and drops the white box) at render time.
+        # Black needs no recolor — the bitmap is already black-on-white.
+        recolor = self.color if self.color and self.color != DEFAULT_COLOR else None
         for byte in data:
             if len(page.images) >= MAX_RUNS_PER_PAGE:
                 page.truncated = True
@@ -780,6 +789,7 @@ class _TextState:
                     ImageRef(
                         x=x, y=y - h + drop, width=w, height=h,
                         mime="image/png", data=png, crisp=True,
+                        recolor=recolor,
                     )
                 )
             x += max(adv, 1)

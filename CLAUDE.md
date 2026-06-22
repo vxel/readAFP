@@ -304,10 +304,20 @@ local-id→name indirection is not yet handled.
   screenshot). Two earlier all-or-nothing attempts (rendering *all* body
   text as bitmaps) were backed out for looking worse than substitute.
 
-  Still open: (a) embedded raster glyphs render in black — STC/SEC text
-  color isn't applied to the 1-bit bitmaps; (b) only 0° orientation for
-  embedded glyphs; (c) small embedded raster fonts could be rendered if
-  upscaled with anti-aliasing rather than nearest-neighbor.
+  Embedded raster glyphs now honor **STC/SEC text color**: a non-default
+  color sets `ImageRef.recolor` and `render._glyph_ink_filters` emits one
+  SVG filter per color that turns the 1-bit black-on-white bitmap into the
+  ink color on a transparent background (`feColorMatrix` builds an alpha
+  mask `1 − R`, then `feFlood` + `feComposite operator="in"` paints it) —
+  which also drops the white box so colored glyphs composite cleanly. Black
+  needs no filter (the bitmap is already black-on-white). No corpus file has
+  colored embedded raster glyphs, so it's covered by synthetic render tests
+  in `test_ptoca.py` (one all-black glyph + an STC color).
+
+  Still open: (a) only 0° orientation for embedded glyphs; (b) small
+  embedded raster fonts could be rendered if upscaled with anti-aliasing
+  rather than nearest-neighbor; (c) the outline path already colored glyphs
+  (`_emit_embedded_outlines` fill) — this brings the raster path to parity.
 - FNI character-increment widths are not yet fed into document text
   fitting (render still uses position-anchored width estimation; the
   primary health-coverage sample embeds no fonts, so it cannot benefit).
