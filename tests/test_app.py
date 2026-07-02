@@ -298,3 +298,23 @@ def test_pyodide_zip_route_serves_importable_package() -> None:
 def test_index_loads_inbrowser_script() -> None:
     html = create_app().test_client().get("/").get_data(as_text=True)
     assert "inbrowser.js" in html
+
+
+def test_drop_handler_uses_request_submit() -> None:
+    """Drag-and-drop must go through requestSubmit(): a programmatic submit()
+    fires no submit event, so the in-browser (no-upload) handler never
+    intercepts and a dropped file is silently POSTed to the server."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "dropForm.requestSubmit()" in html
+    assert "dropForm.submit()" not in html
+
+
+def test_inbrowser_fallback_requires_consent() -> None:
+    """The in-browser path promises the file never leaves the machine, so its
+    server-submit fallback must ask the user first, never upload silently."""
+    js_path = (Path(__file__).parent.parent / "src" / "readafp" / "static"
+               / "inbrowser.js")
+    js = js_path.read_text(encoding="utf-8")
+    assert "window.confirm" in js
+    fallback = js[js.index("catch (err)"):]
+    assert fallback.index("window.confirm") < fallback.index("form.submit()")

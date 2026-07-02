@@ -5,12 +5,19 @@
  *
  * It intercepts the upload form's submit, runs the same readafp parser +
  * template client-side, and replaces the page with the rendered result. If
- * the engine can't load (e.g. a network blocks the CDN), it falls back to a
- * normal server submit so the tool still works for unrestricted users.
+ * the engine can't load (e.g. a network blocks the CDN), it offers — with
+ * the user's explicit consent, never silently — a normal server submit so
+ * the tool still works for unrestricted users.
  */
 (function () {
   "use strict";
   var PY = "https://cdn.jsdelivr.net/pyodide/v0.27.2/full/";
+  // Subresource-integrity hash of the pinned pyodide.js above — a tampered
+  // CDN copy of the loader is refused. The engine assets the loader then
+  // fetches (wasm/stdlib) are not SRI-covered; full closure would need
+  // self-hosting pyodide.
+  var PY_SRI =
+    "sha384-Dz8WbRJS+zEg3mTsQKFzS7uiJxTV6CVDI6lD5b49KMnhy6hlO1vl+ru6YCYNiaXz";
   var pyodideReady = null;
 
   function overlay(msg) {
@@ -43,10 +50,14 @@
     if (el) el.style.display = "none";
   }
 
-  function loadScript(src) {
+  function loadScript(src, integrity) {
     return new Promise(function (res, rej) {
       var s = document.createElement("script");
       s.src = src;
+      if (integrity) {
+        s.integrity = integrity;
+        s.crossOrigin = "anonymous";
+      }
       s.onload = res;
       s.onerror = function () { rej(new Error("failed to load " + src)); };
       document.head.appendChild(s);
@@ -57,7 +68,7 @@
     if (pyodideReady) return pyodideReady;
     pyodideReady = (async function () {
       overlay("Loading the in-browser engine… (first time only)");
-      await loadScript(PY + "pyodide.js");
+      await loadScript(PY + "pyodide.js", PY_SRI);
       var py = await loadPyodide({ indexURL: PY });
       await py.loadPackage("micropip");
       var micropip = py.pyimport("micropip");
@@ -98,10 +109,20 @@
       document.write(html);
       document.close();
     } catch (err) {
-      console.error("in-browser processing failed; falling back to server:", err);
+      console.error("in-browser processing failed:", err);
       hideOverlay();
-      form.removeEventListener("submit", form.__ib);
-      form.submit();
+      // Never upload silently: the page just promised the file stays local,
+      // so a fallback to the server needs the user's explicit OK.
+      var ok = window.confirm(
+        "In-browser processing couldn't run (the engine failed to load or " +
+        "crashed).\n\nSend the file to the readAFP server instead? It will " +
+        "be uploaded, processed, and immediately discarded.\n\nChoose " +
+        "Cancel to keep the file on your computer."
+      );
+      if (ok) {
+        form.removeEventListener("submit", form.__ib);
+        form.submit();
+      }
     }
   }
 

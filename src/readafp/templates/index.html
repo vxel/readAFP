@@ -943,7 +943,10 @@
     document.addEventListener("drop", (e) => {
       if (e.dataTransfer.files.length) {
         dropInput.files = e.dataTransfer.files;
-        dropForm.submit();
+        // requestSubmit (not submit): fires the submit event so the
+        // in-browser (no-upload) handler can intercept, and enforces the
+        // required terms checkbox. submit() would silently POST the file.
+        dropForm.requestSubmit();
       }
     });
 
