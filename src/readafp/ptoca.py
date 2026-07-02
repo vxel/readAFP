@@ -548,12 +548,12 @@ class _TextState:
 
     def apply(self, cs: ControlSequence, page: Page) -> None:
         t, p = cs.cs_type, cs.params
-        if t == 0xC6 and len(p) >= 2:  # AMI
-            self.i = _u16(p)
+        if t == 0xC6 and len(p) >= 2:  # AMI (DSPLCMNT is SBIN per PTOCA)
+            self.i = _s16(p)
         elif t == 0xC8 and len(p) >= 2:  # RMI
             self.i += _s16(p)
-        elif t == 0xD2 and len(p) >= 2:  # AMB
-            self.b = _u16(p)
+        elif t == 0xD2 and len(p) >= 2:  # AMB (DSPLCMNT is SBIN per PTOCA)
+            self.b = _s16(p)
         elif t == 0xD4 and len(p) >= 2:  # RMB
             self.b += _s16(p)
         elif t == 0xC0 and len(p) >= 2:  # SIM
@@ -1141,7 +1141,9 @@ def _parse_pgd(data: bytes) -> Tuple[int, int, int]:
     units = _u16(data, 2)
     width = int.from_bytes(data[6:9], "big")
     height = int.from_bytes(data[9:12], "big")
-    units_per_inch = units // 10 if units else 1440  # unit base 00 = 10 in
+    # Unit base 00 = per 10 inches. A declared value below 10 would floor to
+    # 0 units/inch and divide-by-zero downstream; treat it as absent.
+    units_per_inch = units // 10 if units >= 10 else 1440
     return width, height, units_per_inch
 
 
@@ -1911,7 +1913,7 @@ def _paginate_implicit(page: Page) -> List[Page]:
     xs = [r.x for r in page.texts] + [r.x for r in page.rules]
     if xs:  # explicitly positioned content may still exceed the width
         page.width = max(page.width, max(xs) + 6 * DEFAULT_FONT_SIZE)
-    usable = page.height - 320
+    usable = max(1, page.height - 320)  # a tiny declared height must not // 0
     chunks: Dict[int, Page] = {}
     for kind in ("texts", "rules"):
         for item in getattr(page, kind):

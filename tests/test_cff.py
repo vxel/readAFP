@@ -401,3 +401,10 @@ def test_oracle_cid_font_all_glyphs(ttlib) -> None:
                 oracle.append(("z",))
         assert _round_segs(font.glyph_by_gid(gid).segments) == _round_segs(
             oracle)
+
+
+def test_malformed_charstring_returns_none() -> None:
+    """A truncated 16-bit operand (struct.error) must not escape glyph()."""
+    font = cff.CFFFont(_plain_cff_bytes())
+    font._charstrings[1] = b"\x1c\x00"
+    assert font.glyph_by_gid(1) is None

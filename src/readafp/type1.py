@@ -30,6 +30,7 @@ _EEXEC_R = 55665
 _CHARSTRING_R = 4330
 
 _MAX_SUBR_DEPTH = 30  # guard against pathological recursion
+_MAX_SUBRS = 65536  # highest accepted subr index; real fonts use hundreds
 
 
 # A path is a list of segments in glyph design units:
@@ -170,7 +171,10 @@ class Type1Font:
         interp = _Interpreter(self._subrs, self._charstrings)
         try:
             interp.run(cs)
-        except (IndexError, ValueError, RecursionError) as exc:
+        except (IndexError, ValueError, RecursionError, TypeError,
+                struct.error) as exc:
+            # struct.error (truncated operand) is NOT a ValueError subclass;
+            # TypeError covers short-stack splats into _curveto/_seac.
             logger.warning("Type 1 charstring %r failed: %s", name, exc)
             return None
         return Glyph(advance=interp.width, segments=interp.segments)
@@ -228,6 +232,9 @@ def _parse_subrs(private: bytes, len_iv: int) -> List[bytes]:
     subrs: Dict[int, bytes] = {}
     for m in re.finditer(rb"dup[ \t]+(\d+)[ \t]+(\d+)[ \t]+(RD|-\|)[ ]", region):
         num = int(m.group(1))
+        if num >= _MAX_SUBRS:  # hostile index would densify to a huge list
+            logger.warning("ignoring Type 1 subr %d (limit %d)", num, _MAX_SUBRS)
+            continue
         length = int(m.group(2))
         start = m.end()
         subrs[num] = _decrypt(region[start : start + length], _CHARSTRING_R, len_iv)

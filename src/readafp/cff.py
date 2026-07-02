@@ -361,7 +361,9 @@ class CFFFont:
         try:
             interp.run(self._charstrings[gid])
             interp.finish()
-        except (IndexError, ValueError, RecursionError) as exc:
+        except (IndexError, ValueError, RecursionError, TypeError,
+                struct.error) as exc:
+            # struct.error (truncated 28/255 operand) is not a ValueError.
             logger.warning("Type 2 charstring gid %d failed: %s", gid, exc)
             return None
         return Glyph(advance=interp.width, segments=interp.segments)
