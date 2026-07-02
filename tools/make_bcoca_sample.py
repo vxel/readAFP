@@ -31,7 +31,7 @@ def _bdd() -> bytes:
     struct.pack_into(">H", d, 4, 14400)        # YUPUB
     struct.pack_into(">H", d, 6, 900)          # X extent
     struct.pack_into(">H", d, 8, 900)          # Y extent
-    d[12] = 0x1C                               # type: QR Code
+    d[12] = 0x20                               # type: QR Code (X'20')
     d[13] = 0x02                               # modifier
     d[17] = 0x14                               # module width: 20 mils
     return bytes(d)
@@ -39,7 +39,7 @@ def _bdd() -> bytes:
 
 def _bda(url: str) -> bytes:
     """Bar Code Data: origin, QR special-function params, then the data."""
-    d = bytearray(15)
+    d = bytearray(14)  # QR params run bytes 5-13; data starts at byte 14
     # d[0] flags = 0 (draw); d[1:5] X/Y offset = 0 within the object area.
     d[8] = 0x01                                # error correction level M
     return bytes(d) + url.encode("ascii")
