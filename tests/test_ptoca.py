@@ -846,3 +846,64 @@ def test_fop_inline_runs_use_monospace() -> None:
     page = ptoca.extract_pages(list(iter_fields(afp.read_bytes())))[0]
     inline = [r for r in page.texts if "fo:inline" in r.text]
     assert inline and all("monospace" in r.font_family for r in inline)
+
+
+def test_pgd_tiny_units_fall_back_to_default() -> None:
+    """XpgUnits 1-9 floored to 0 units/inch and divide-by-zero'd downstream."""
+    pgd = (
+        bytes([0, 0])
+        + (5).to_bytes(2, "big") * 2
+        + (600).to_bytes(3, "big")
+        + (800).to_bytes(3, "big")
+    )
+    ptx = bytes.fromhex("2bd3" "04c70064" "04d300c8") + bytes(
+        [2 + 4, 0xDA]
+    ) + "Text".encode("cp500")
+    doc = (
+        _sf(0xD3A8A8, b"\x00" * 8)
+        + _sf(0xD3A8AF, b"\x00" * 8)  # BPG
+        + _sf(0xD3A6AF, pgd)  # PGD
+        + _sf(0xD3EE9B, ptx)
+        + _sf(0xD3A9AF, b"\x00" * 8)  # EPG
+        + _sf(0xD3A9A8, b"\x00" * 8)
+    )
+    pages = extract_pages(list(iter_fields(doc)))
+    assert pages[0].units_per_inch == 1440
+    assert pages[0].texts[0].text == "Text"
+
+
+def test_implicit_page_tiny_height_does_not_crash() -> None:
+    """A page height of exactly 320 L-units made _paginate_implicit // 0."""
+    pgd = (
+        bytes([0, 0])
+        + (14400).to_bytes(2, "big") * 2
+        + (600).to_bytes(3, "big")
+        + (320).to_bytes(3, "big")
+    )
+    ptx = bytes.fromhex("2bd3" "04c70064" "04d300c8") + bytes(
+        [2 + 5, 0xDA]
+    ) + "Loose".encode("cp500")
+    doc = (
+        _sf(0xD3A8A8, b"\x00" * 8)
+        + _sf(0xD3A6AF, pgd)
+        + _sf(0xD3EE9B, ptx)  # unbracketed
+        + _sf(0xD3A9A8, b"\x00" * 8)
+    )
+    pages = extract_pages(list(iter_fields(doc)))
+    assert pages and any(t.text == "Loose" for p in pages for t in p.texts)
+
+
+def test_ami_amb_displacement_is_signed() -> None:
+    """PTOCA defines the absolute-move DSPLCMNT as SBIN (twos-complement)."""
+    ptx = bytes.fromhex("2bd3" "04c7fffc" "04d3fff8") + bytes(
+        [2 + 3, 0xDA]
+    ) + "Neg".encode("cp500")
+    doc = (
+        _sf(0xD3A8A8, b"\x00" * 8)
+        + _sf(0xD3A8AF, b"\x00" * 8)
+        + _sf(0xD3EE9B, ptx)
+        + _sf(0xD3A9AF, b"\x00" * 8)
+        + _sf(0xD3A9A8, b"\x00" * 8)
+    )
+    run = extract_pages(list(iter_fields(doc)))[0].texts[0]
+    assert (run.x, run.y) == (-4, -8)

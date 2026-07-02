@@ -72,3 +72,29 @@ def test_glyph_to_path_d_emits_svg_path() -> None:
     assert a_path.startswith("M") and "Z" in a_path  # closed subpaths
     o_path = glyph_to_path_d(t1.glyph("o"), scale=0.1, ox=0, oy=100)
     assert "C" in o_path  # the round 'o' uses cubic curves
+
+
+def test_hostile_subr_index_is_capped() -> None:
+    """A crafted `dup 900000000 ...` must not densify a 900M-element list."""
+    from readafp.type1 import _parse_subrs
+
+    private = (
+        b"/Subrs 2 array\n"
+        b"dup 0 1 RD X NP\n"
+        b"dup 900000000 1 RD X NP\n"
+        b"/CharStrings 0 dict\n"
+    )
+    subrs = _parse_subrs(private, 0)
+    assert len(subrs) == 1  # the hostile index is ignored, not allocated
+
+
+def test_malformed_charstrings_return_none() -> None:
+    if not OUTLINE.exists():
+        pytest.skip("outline font fixture not present")
+    t1 = _font()
+    # struct.error (truncated 255 operand) and TypeError (rrcurveto on an
+    # empty stack) must degrade to None, not escape the glyph decoder.
+    t1._charstrings["bad255"] = b"\xff\x00\x00"
+    t1._charstrings["badcurve"] = b"\x08"
+    assert t1.glyph("bad255") is None
+    assert t1.glyph("badcurve") is None
