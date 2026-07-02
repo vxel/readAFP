@@ -119,12 +119,13 @@ def _arc_object(gps: int, start: float, sweep: float, matrix) -> bytes:
         import math
         phi = math.radians(45)
         a, b = radius, radius // 2  # major : minor = 2 : 1
+        # Spec (GSAP): P=a·cosA, Q=b·cosA, R=-b·sinA, S=a·sinA
         p = round(a * math.cos(phi))
-        q = round(-b * math.sin(phi))
-        r = round(a * math.sin(phi))
-        s = round(b * math.cos(phi))
+        q = round(b * math.cos(phi))
+        r = round(-b * math.sin(phi))
+        s = round(a * math.sin(phi))
     else:
-        p, q, r, s = radius, 0, 0, radius   # circle
+        p, q, r, s = radius, radius, 0, 0   # circle: P=Q=r, R=S=0
     orders = (
         gspcol_rgb(0x11, 0x55, 0xCC)   # blue
         + gslw(10)

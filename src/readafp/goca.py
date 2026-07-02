@@ -249,10 +249,11 @@ class _State:
     in_area: bool = False
     area_boundary: bool = True
     area_path: List[str] = field(default_factory=list)
+    # GSAP defaults per spec: P=Q=1, R=S=0 (unit circle).
     arc_p: float = 1.0
-    arc_q: float = 0.0
+    arc_q: float = 1.0
     arc_r: float = 0.0
-    arc_s: float = 1.0
+    arc_s: float = 0.0
 
 
 def _stroke_attrs(st: "GocaContext") -> str:
@@ -518,20 +519,21 @@ def _handle_gbox(ctx: GocaContext, params: bytes, at_given: bool) -> None:
 def _arc_to_ellipse(ctx: GocaContext, cx: float, cy: float, multiplier: float) -> str:
     """Render a GFARC/GCFARC as SVG <ellipse> (or <circle>)."""
     st = ctx.state
-    # Arc parameters define the linear transform from unit circle:
-    # x-axis endpoint: (P, R) * multiplier; y-axis endpoint: (Q, S) * multiplier
+    # GSAP transform (spec): X' = P·X + R·Y, Y' = S·X + Q·Y — the matrix
+    # [[P, R], [S, Q]]. Its columns (P, S) and (R, Q) are the images of the
+    # unit x/y vectors: the ellipse's semi-axes for an orthogonal transform.
     import math
     p, q, r, s = st.arc_p * multiplier, st.arc_q * multiplier, \
                   st.arc_r * multiplier, st.arc_s * multiplier
 
-    # Semi-axis lengths in GPS units
-    rx_gps = math.sqrt(p * p + r * r)
-    ry_gps = math.sqrt(q * q + s * s)
+    # Semi-axis lengths in GPS units (column norms)
+    rx_gps = math.sqrt(p * p + s * s)
+    ry_gps = math.sqrt(r * r + q * q)
     if rx_gps < 1e-6 or ry_gps < 1e-6:
         return ""
 
-    # Rotation angle of the x-axis in GPS (then reflect for SVG Y-flip)
-    angle_rad = math.atan2(r, p)  # GPS x-axis direction
+    # Rotation angle of the x-axis image (then reflect for SVG Y-flip)
+    angle_rad = math.atan2(s, p)  # GPS x-axis direction
     angle_svg = -math.degrees(angle_rad)  # negate because Y is flipped in SVG
 
     scx = _sx(ctx, cx)
@@ -580,8 +582,8 @@ def _handle_gfarc(ctx: GocaContext, params: bytes, at_given: bool) -> None:
         # Add full-arc to area path as a closed sub-path
         import math
         st = ctx.state
-        rx = math.sqrt(st.arc_p ** 2 + st.arc_r ** 2) * multiplier
-        ry = math.sqrt(st.arc_q ** 2 + st.arc_s ** 2) * multiplier
+        rx = math.sqrt(st.arc_p ** 2 + st.arc_s ** 2) * multiplier
+        ry = math.sqrt(st.arc_r ** 2 + st.arc_q ** 2) * multiplier
         scx = _sx(ctx, gx)
         scy = _sy(ctx, gy)
         # Two half-arcs to form a closed ellipse in SVG
@@ -623,14 +625,14 @@ def _handle_gparc(ctx: GocaContext, params: bytes, at_given: bool) -> None:
         return
 
     st = ctx.state
-    # Arc parameters give the unit-circle → ellipse transform M = [[p, q],
-    # [r, s]] (columns are the images of the x and y unit vectors), scaled
-    # by the multiplier. The semi-axes are the column norms and the major
-    # axis tilts with the x-column direction — matching the full-arc path.
+    # GSAP transform (spec): X' = P·X + R·Y, Y' = S·X + Q·Y — the matrix
+    # M = [[p, r], [s, q]] scaled by the multiplier. Its columns (p, s) and
+    # (r, q) are the images of the unit x/y vectors: the semi-axes for an
+    # orthogonal transform — matching the full-arc path.
     p, q = st.arc_p * multiplier, st.arc_q * multiplier
     r, s = st.arc_r * multiplier, st.arc_s * multiplier
-    rx = math.sqrt(p * p + r * r)
-    ry = math.sqrt(q * q + s * s)
+    rx = math.sqrt(p * p + s * s)
+    ry = math.sqrt(r * r + q * q)
     if rx < 1e-6 or ry < 1e-6:
         return
 
@@ -640,26 +642,26 @@ def _handle_gparc(ctx: GocaContext, params: bytes, at_given: bool) -> None:
         return
 
     # x-axis rotation of the ellipse, negated for the SVG Y-flip.
-    angle_svg = -math.degrees(math.atan2(r, p)) or 0.0  # avoid "-0"
+    angle_svg = -math.degrees(math.atan2(s, p)) or 0.0  # avoid "-0"
 
     # Arc endpoints: a unit-circle parameter angle a maps to the GPS point
     # centre + M·(cos a, sin a); _sx/_sy then apply the Y-flip to screen.
     def _endpoint(a_deg: float):
         a = math.radians(a_deg)
         ca, sa = math.cos(a), math.sin(a)
-        gx = gcx + p * ca + q * sa
-        gy = gcy + r * ca + s * sa
-        return _sx(ctx, gx), _sy(ctx, gy)
+        return gcx + p * ca + r * sa, gcy + s * ca + q * sa
 
-    sx_start, sy_start = _endpoint(start_deg)
-    sx_end, sy_end = _endpoint(start_deg + sweep_deg)
+    gx_start, gy_start = _endpoint(start_deg)
+    gx_end, gy_end = _endpoint(start_deg + sweep_deg)
+    sx_start, sy_start = _sx(ctx, gx_start), _sy(ctx, gy_start)
+    sx_end, sy_end = _sx(ctx, gx_end), _sy(ctx, gy_end)
 
     # Line from (gx0, gy0) to the arc start.
     sx0, sy0 = _sx(ctx, gx0), _sy(ctx, gy0)
     large_arc = 1 if abs(sweep_deg) > 180 else 0
-    # GOCA sweeps CCW. The Y-flip reverses that to SVG flag 0; a reflecting
-    # arc matrix (negative determinant) reverses it once more.
-    sweep_flag = 0 if (p * s - q * r) >= 0 else 1
+    # Determinant P·Q − R·S > 0 sweeps CCW (spec p. 24); the Y-flip turns
+    # that into SVG flag 0. A reflecting matrix reverses it once more.
+    sweep_flag = 0 if (p * q - r * s) >= 0 else 1
 
     d = (
         f"M {sx0:.3g},{sy0:.3g} "
@@ -667,7 +669,8 @@ def _handle_gparc(ctx: GocaContext, params: bytes, at_given: bool) -> None:
         f"A {rx:.3g},{ry:.3g} {angle_svg:.3g} {large_arc} {sweep_flag} "
         f"{sx_end:.3g},{sy_end:.3g}"
     )
-    ctx.state.cx, ctx.state.cy = gcx, gcy  # arc centres current pos
+    # Spec: "The current position is moved to the endpoint of the arc."
+    ctx.state.cx, ctx.state.cy = gx_end, gy_end
 
     attrs = _stroke_attrs(ctx)
     ctx.out.append(f'<path d={quoteattr(d)} fill="none" {attrs}/>')

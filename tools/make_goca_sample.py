@@ -176,13 +176,13 @@ def _object3_ellipse(gps: int) -> bytes:
     """Green-filled ellipse (aspect ratio 2:1) centred in the GPS window."""
     cx = gps // 2
     cy = gps // 2
-    # Arc transform: P=rx, Q=0, R=0, S=ry → axis-aligned ellipse
+    # Arc transform (spec): P=rx, Q=ry, R=S=0 → axis-aligned ellipse
     rx = int(gps * 0.40)
     ry = int(gps * 0.22)
     orders = (
         gspcol_rgb(0x22, 0xAA, 0x44)   # green fill
         + gslw(6)
-        + gsap(rx, 0, 0, ry)
+        + gsap(rx, ry, 0, 0)
         + gfarc_at(cx, cy, 1, 0)       # multiplier = 1.0
     )
     return _begin_segment(orders, b"ELP1")
