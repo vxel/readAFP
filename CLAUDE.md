@@ -98,7 +98,7 @@ advance; producers vary it per line to justify text).
 
 **CMYK composite** — four grayscale JPEG planes (one per ink). Renderer applies `feColorMatrix` filters to invert each plane to its complement color, then `mix-blend-mode: multiply` to optically compose: R=(1-C)(1-K), G=(1-M)(1-K), B=(1-Y)(1-K).
 
-**BCOCA / QR** — BDD (descriptor) + BDA (data) bytes parsed by `parse_barcode()`. Only QR (`type=0x1C`) in corpus. BDA byte 5 bit 0 triggers EBCDIC→ASCII translation (codec from byte 6). Version = byte 7 (0 = auto), EC level = byte 8 (0-3 = L/M/Q/H). Symbol generated with `segno`.
+**BCOCA** — BDD (descriptor) + BDA (data) bytes parsed by `parse_barcode()`. BSD type X'20' = QR Code (special-function params bytes 5-13, data from byte 14; version = byte 7, 0 = auto; EC level = byte 8, 0-3 = L/M/Q/H); X'1C' = **Data Matrix** (params 5-14, data from 15) — the corpus's only bar codes (afplib_start/ende) are Data Matrix, long misread here as QR. BDA byte 5 bit 0 triggers EBCDIC→ASCII translation (codec from byte 6). Only QR is generated (via `segno`); Data Matrix is parsed for the inspector but skipped by the renderer rather than drawn as a wrong symbol. BSD byte 0 unit base: X'00' per 10 in, X'01' per 10 cm (converted).
 
 ## Data Model (ptoca.py)
 
@@ -368,9 +368,15 @@ both (`id N → NAME` for MPO, `overlay 'NAME' @ offset x,y` for IPO).
   done: circular-arc sweep direction and rotated-ellipse orientation are
   both verified — `_handle_gparc` derives the ellipse semi-axes, x-axis
   rotation and sweep flag from the GSAP arc-parameter matrix, mirroring
-  the full-arc path. Ground truth in `testdata/goca_arc_sample.afp`,
-  regressions in `test_goca.py`. Skewed (non-orthogonal) arc matrices
-  still approximate, as the column-norm axes assume no shear.)
+  the full-arc path. **GSAP semantics follow the spec transform
+  X' = P·X + R·Y, Y' = S·X + Q·Y** — matrix [[P,R],[S,Q]], columns (P,S)/
+  (R,Q) are the semi-axes, direction from det P·Q − R·S; the code (and its
+  sample generators) used the transposed matrix until 2026-07, so
+  spec-conformant arcs rendered wrong/empty. GPARC moves the current
+  position to the arc **endpoint** (not the centre). Ground truth in
+  `testdata/goca_arc_sample.afp`, regressions in `test_goca.py`. Skewed
+  (non-orthogonal) arc matrices still approximate, as the column-norm
+  axes assume no shear.)
 - Unbracketed PTX fully handled (implicit page captures it, but no environment group).
 - TLE (Tag Logical Element, `0xD3A090`) Find support is **coded and ready**
   (`_field_search_text` decodes its FQN X'02' name + X'36' value triplets,
