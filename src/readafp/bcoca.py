@@ -6,10 +6,10 @@ extents, symbology type/modifier, module width — and Bar Code Data
 (BDA) holding flags, the symbol origin, symbology-specific parameters
 and the data characters.
 
-The only symbology in the corpus is QR Code (type 0x1C); its symbol
-matrix is generated with segno (pure-Python QR encoder) and packed as
-a bilevel PNG. Other symbologies are skipped with a log message rather
-than drawn wrong.
+Only QR Code (type X'20') is generated — with segno (pure-Python QR
+encoder), packed as a bilevel PNG. Other symbologies, including the
+corpus's Data Matrix objects (type X'1C', long mistaken for QR here),
+are skipped with a log message rather than drawn as the wrong symbol.
 
 Reference: BCOCA Reference, AFPC-0005-11 (docs/specs/bcoca-reference-11.pdf).
 """
@@ -24,7 +24,9 @@ from readafp.ioca import pack_png
 
 logger = logging.getLogger(__name__)
 
-TYPE_QR = 0x1C
+# BSD type codes (BCOCA Table 9): X'1C' is Data Matrix, NOT QR.
+TYPE_DATA_MATRIX = 0x1C
+TYPE_QR = 0x20
 
 # QR special-function parameter: EBCDIC-to-ASCII conversion code pages
 # that Python's stdlib can decode (byte 6 of the BDA, when byte 5 bit 0
@@ -61,7 +63,11 @@ def parse_barcode(bdd: bytes, bda: bytes) -> Optional[BarCode]:
     """
     if len(bdd) < 18 or len(bda) < 5:
         return None
-    upi = int.from_bytes(bdd[2:4], "big") // 10
+    xupub = int.from_bytes(bdd[2:4], "big")
+    if bdd[0] == 0x01:  # unit base X'01': units per 10 centimeters
+        upi = round(xupub * 2.54 / 10)
+    else:
+        upi = xupub // 10  # unit base X'00': units per 10 inches
     bc_type = bdd[12]
     modifier = bdd[13]
     module_mils = bdd[17]
@@ -75,10 +81,10 @@ def parse_barcode(bdd: bytes, bda: bytes) -> Optional[BarCode]:
     version = ec_level = 0
     payload = bda[5:]
     codec = "ascii"
-    if bc_type == TYPE_QR and len(bda) >= 15:
-        # Special-function parameters: control flags(5) conversion(6)
-        # version(7) error correction(8) sequence(9) total(10)
-        # parity(11) special flags(12) reserved(13-14) data(15-).
+    if bc_type == TYPE_QR and len(bda) >= 14:
+        # QR special-function parameters (Table 31): control flags(5)
+        # conversion(6) version(7) error correction(8) sequence(9)
+        # total(10) parity(11) special flags(12) application(13) data(14-).
         if bda[5] & 0x80:  # EBCDIC-to-ASCII translation requested
             codec = _CONVERSION_CODECS.get(bda[6], "cp500")
         version = bda[7] if bda[7] <= 40 else 0
@@ -86,6 +92,12 @@ def parse_barcode(bdd: bytes, bda: bytes) -> Optional[BarCode]:
         if bda[10]:
             logger.info("QR structured append not supported; "
                         "rendering symbol %d/%d alone", bda[9], bda[10])
+        payload = bda[14:]
+    elif bc_type == TYPE_DATA_MATRIX and len(bda) >= 15:
+        # Data Matrix special-function parameters (Table 23) run bytes
+        # 5-14; the data characters start at byte 15.
+        if bda[5] & 0x80:
+            codec = _CONVERSION_CODECS.get(bda[6], "cp500")
         payload = bda[15:]
     try:
         data = payload.decode(codec)
@@ -105,7 +117,11 @@ def barcode_png(bar: BarCode) -> Optional[Tuple[bytes, int]]:
     caller can skip them instead of drawing something invented.
     """
     if bar.bc_type != TYPE_QR:
-        logger.info("bar code type 0x%02X not supported", bar.bc_type)
+        if bar.bc_type == TYPE_DATA_MATRIX:
+            logger.info("Data Matrix symbol not supported; skipping "
+                        "rather than drawing a QR look-alike")
+        else:
+            logger.info("bar code type 0x%02X not supported", bar.bc_type)
         return None
     error = _EC_LEVELS[bar.ec_level]
     try:
@@ -114,7 +130,11 @@ def barcode_png(bar: BarCode) -> Optional[Tuple[bytes, int]]:
     except segno.DataOverflowError:
         # BSD asked for a too-small version; spec behavior for control
         # flag bit 2 = B'0' is to grow to the smallest symbol that fits.
-        qr = segno.make_qr(bar.data, error=error, boost_error=False)
+        try:
+            qr = segno.make_qr(bar.data, error=error, boost_error=False)
+        except (segno.DataOverflowError, ValueError) as exc:
+            logger.warning("cannot encode QR data: %s", exc)
+            return None
     except ValueError as exc:
         logger.warning("cannot encode QR data: %s", exc)
         return None
