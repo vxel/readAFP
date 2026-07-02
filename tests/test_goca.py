@@ -432,10 +432,11 @@ def test_partial_arc_rotated_ellipse_orientation() -> None:
     R = 200
     phi = math.radians(45)
     a, b = 2 * R, R
+    # Spec (GSAP): P=a·cosA, Q=b·cosA, R=-b·sinA, S=a·sinA
     p = round(a * math.cos(phi))
-    q = round(-b * math.sin(phi))
-    r = round(a * math.sin(phi))
-    s = round(b * math.cos(phi))
+    q = round(b * math.cos(phi))
+    r = round(-b * math.sin(phi))
+    s = round(a * math.sin(phi))
     cx = cy = 500
     gsap = bytes([0x22, 8]) + struct.pack(">hhhh", p, q, r, s)
     gparc = (
