@@ -54,6 +54,44 @@ MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 # once its element budget is spent, whichever comes first.
 MAX_RENDER_PAGES = 500
 
+# Content-Security-Policy for every response. script-src / connect-src must
+# stay permissive because the in-browser (Pyodide) privacy mode loads its
+# WebAssembly engine from the jsDelivr CDN, fetches wheels from PyPI via
+# micropip, and needs eval/wasm-eval to run — so a nonce-only script policy
+# would break it. The load-bearing directives here are the structural ones
+# that cost nothing to lock down: object-src / base-uri / frame-ancestors /
+# form-action shut off plugin-, <base>-, clickjacking- and form-hijack-based
+# attacks regardless of the script policy. XSS defense proper remains the
+# output escaping in render.py + Jinja autoescape.
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' "
+    "https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self'; "
+    "connect-src 'self' https://cdn.jsdelivr.net https://pypi.org "
+    "https://files.pythonhosted.org; "
+    "worker-src 'self' blob:; "
+    "child-src 'self' blob:; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "frame-ancestors 'none'; "
+    "form-action 'self'"
+)
+
+# Static response headers applied alongside the CSP.
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": _CSP,
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",  # legacy sibling of frame-ancestors
+    "Referrer-Policy": "no-referrer",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Permissions-Policy": (
+        "geolocation=(), microphone=(), camera=(), usb=(), payment=()"
+    ),
+}
+
 # EBCDIC code pages offered for text decoding. MCF-labeled fonts decode
 # with their declared code page; this manual choice covers the rest.
 # Keys are Python codec names.
@@ -256,6 +294,13 @@ def create_app():
         """The readafp package (source + templates), zipped for the
         in-browser Pyodide build to unpack and import. Built once, cached."""
         return Response(_readafp_zip_bytes(), mimetype="application/zip")
+
+    @app.after_request
+    def _set_security_headers(response):
+        """Attach hardening headers (CSP + friends) to every response."""
+        for header, value in _SECURITY_HEADERS.items():
+            response.headers.setdefault(header, value)
+        return response
 
     return app
 
