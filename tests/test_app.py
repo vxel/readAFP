@@ -309,6 +309,36 @@ def test_drop_handler_uses_request_submit() -> None:
     assert "dropForm.submit()" not in html
 
 
+def test_security_headers_present_on_every_response() -> None:
+    """CSP + hardening headers must ride on all responses (regression guard).
+
+    The structural CSP directives are the load-bearing ones: they must lock
+    down plugins, <base>, framing and form actions even though script-src
+    stays permissive for the in-browser Pyodide engine.
+    """
+    c = create_app().test_client()
+    for path in ("/", "/healthz", "/guide"):
+        r = c.get(path)
+        csp = r.headers.get("Content-Security-Policy", "")
+        assert "object-src 'none'" in csp
+        assert "base-uri 'none'" in csp
+        assert "frame-ancestors 'none'" in csp
+        assert "form-action 'self'" in csp
+        assert r.headers.get("X-Content-Type-Options") == "nosniff"
+        assert r.headers.get("X-Frame-Options") == "DENY"
+        assert r.headers.get("Referrer-Policy") == "no-referrer"
+
+
+def test_csp_still_allows_the_inbrowser_engine() -> None:
+    """The privacy mode loads Pyodide from jsDelivr and wheels from PyPI; the
+    CSP must not cut those off or the no-upload path silently breaks."""
+    csp = create_app().test_client().get("/").headers["Content-Security-Policy"]
+    assert "https://cdn.jsdelivr.net" in csp
+    assert "files.pythonhosted.org" in csp
+    assert "'wasm-unsafe-eval'" in csp
+    assert "img-src 'self' data:" in csp  # base64 SVG images must load
+
+
 def test_inbrowser_fallback_requires_consent() -> None:
     """The in-browser path promises the file never leaves the machine, so its
     server-submit fallback must ask the user first, never upload silently."""
