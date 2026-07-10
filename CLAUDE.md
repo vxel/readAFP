@@ -311,8 +311,16 @@ both (`id N → NAME` for MPO, `overlay 'NAME' @ offset x,y` for IPO).
   bitmap). Using the em formula on a fixed-metric font collapses the advance
   and glyphs pile up (the failure mode on fixed-metric fonts whose
   increments are ~12-33 pels, not ~500/em). Each glyph's FNI **baseline
-  offset** (bytes 12-13,
-  1000/em) drops descenders (g, p, q, y) below the line. **Weight** comes
+  offset** (bytes 12-13) drops descenders (g, p, q, y) below the line, and
+  is scaled the **same unit-base way** as the advance — pels × pel for
+  fixed fonts, ÷1000 × em for relative. Using the em formula on a
+  fixed-metric font (~8 pels) drops descenders by ~1 L-unit instead of ~38,
+  so p/g/y/j sit too high. Each glyph's box is offset from the pen by its
+  FNI **A-space** (left side bearing, bytes 18-19, `Glyph.left_bearing`),
+  scaled the same unit-base way; ignoring it lets a narrow low-bearing glyph
+  (e.g. `j`, A=−1) crowd the next one (a `k`, A=+4) — the ink gap came out
+  ~10 L-units instead of ~34. The advance stays the full FNI increment
+  (A-space + box width + C-space). **Weight** comes
   from the FND **WeightClass** (byte 32, ≥7 = bold) — authoritative when the
   typeface name is just "Arial" for both weights. **Verdana** is a recognized
   substitute typeface (web-safe, its own metrics). Small 1-bit raster glyphs

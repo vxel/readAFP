@@ -76,6 +76,7 @@ class Glyph:
     char_increment: int  # inline advance, in the font's metric units
     png: bytes  # 1-bit grayscale PNG, dark pel on white
     baseline_offset: int = 0  # box-bottom depth below baseline (1000/em)
+    left_bearing: int = 0  # FNI A-space: box left edge offset from the pen
 
 
 @dataclass
@@ -168,9 +169,12 @@ def _decode_raster_glyphs(
     align = _ALIGN.get(fnc[16], 1) if len(fnc) > 16 else 1
     fni_rg = fnc[15] if len(fnc) > 15 else 28
 
-    # FNM index -> (GCGID, increment, baseline offset), from the Font Index.
-    # The baseline offset (bytes 12-13, signed, 1000/em) is how far the
-    # glyph box bottom sits below the baseline — non-zero for descenders.
+    # FNM index -> (GCGID, increment, baseline offset, A-space), from the
+    # Font Index. The baseline offset (bytes 12-13, signed) is how far the
+    # glyph box bottom sits below the baseline — non-zero for descenders. The
+    # A-space (bytes 18-19, signed) is the box's left-side bearing: its left
+    # edge sits this far right of the pen (negative = left), so inter-glyph
+    # spacing follows the real metrics (e.g. a narrow 'j' beside a 'k').
     by_pattern: Dict[int, tuple] = {}
     if fni_rg >= 18:
         for i in range(0, len(fni) - fni_rg + 1, fni_rg):
@@ -178,7 +182,10 @@ def _decode_raster_glyphs(
             char_inc = struct.unpack(">H", fni[i + 8 : i + 10])[0]
             baseline = struct.unpack(">h", fni[i + 12 : i + 14])[0]
             fnm_index = struct.unpack(">H", fni[i + 16 : i + 18])[0]
-            by_pattern.setdefault(fnm_index, (gcgid, char_inc, baseline))
+            aspace = (struct.unpack(">h", fni[i + 18 : i + 20])[0]
+                      if fni_rg >= 20 else 0)
+            by_pattern.setdefault(
+                fnm_index, (gcgid, char_inc, baseline, aspace))
 
     glyphs: List[Glyph] = []
     count = len(fnm) // 8
@@ -192,7 +199,8 @@ def _decode_raster_glyphs(
         png = _glyph_png(pattern, box_w, box_h)
         if png is None:
             continue
-        gcgid, char_inc, baseline = by_pattern.get(idx, ("", 0, 0))
+        gcgid, char_inc, baseline, aspace = by_pattern.get(
+            idx, ("", 0, 0, 0))
         glyphs.append(
             Glyph(
                 gcgid=gcgid,
@@ -201,6 +209,7 @@ def _decode_raster_glyphs(
                 char_increment=char_inc,
                 png=png,
                 baseline_offset=baseline,
+                left_bearing=aspace,
             )
         )
     return glyphs

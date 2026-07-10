@@ -127,6 +127,58 @@ def _raster_emb_font(point_size: float = 24.0) -> _EmbeddedFont:
     )
 
 
+def test_fixed_metric_left_bearing_positions_glyph() -> None:
+    # The FNI A-space (left side bearing) offsets the glyph box from the pen,
+    # scaled by the pel factor for fixed-metric fonts. Ignoring it crowds a
+    # narrow glyph (e.g. 'j', bearing ~0) against the next one; a glyph with
+    # a larger bearing must be drawn that much further right of the pen.
+    png = _glyph_png(b"\xff" * 8, 8, 8)
+
+    def glyph_x(bearing: int) -> float:
+        g = Glyph(gcgid="LX010000", width=8, height=8, char_increment=25,
+                  png=png, left_bearing=bearing)
+        emb = _EmbeddedFont(
+            cp_map={0x41: "LX010000"}, glyphs={"LX010000": g},
+            ref_height=8, resolution=300, point_size=24.0,
+            relative_metrics=False,
+        )
+        page = Page(units_per_inch=1440)
+        state = _TextState()
+        state.i = 500
+        state._emit_embedded_glyphs(page, b"\x41", emb, 80)
+        return page.images[0].x
+
+    pel = 1440 / 300
+    assert round(glyph_x(5) - glyph_x(0)) == round(5 * pel)
+
+
+def test_fixed_metric_descender_drops_by_pels() -> None:
+    # For fixed 10-inch metric fonts the FNI baseline offset is in pels, so
+    # the descender drop must scale by the pel factor (upi/resolution), not
+    # the relative 1000/em formula — otherwise descenders (p, g, y, j) barely
+    # drop and sit too high. Descender box lands lower on the page than an
+    # otherwise-identical baseline glyph by exactly baseline_offset * pel.
+    png = _glyph_png(b"\xff" * 8, 8, 8)
+
+    def emit(base_off: int) -> Page:
+        g = Glyph(gcgid="LP010000", width=8, height=8, char_increment=25,
+                  png=png, baseline_offset=base_off)
+        emb = _EmbeddedFont(
+            cp_map={0x41: "LP010000"}, glyphs={"LP010000": g},
+            ref_height=8, resolution=300, point_size=24.0,  # above the gate
+            relative_metrics=False,
+        )
+        page = Page(units_per_inch=1440)
+        state = _TextState()
+        state.b = 1000
+        state._emit_embedded_glyphs(page, b"\x41", emb, 80)
+        return page
+
+    pel = 1440 / 300  # 4.8 L-units per pel
+    drop = emit(8).images[0].y - emit(0).images[0].y
+    assert round(drop) == round(8 * pel)  # ~38, not the ~4 the em formula gives
+
+
 def test_symbol_hidden_at_control_codepoint_uses_embedded_glyph() -> None:
     # A byte the code page labels a control/space (0xA0 -> NBSP in cp1252) but
     # whose embedded glyph is a real symbol — e.g. a euro sign a producer put

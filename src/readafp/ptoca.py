@@ -879,12 +879,23 @@ class _TextState:
                 w = max(1, round(glyph.width * pel))
                 h = max(1, round(glyph.height * pel))
                 # The glyph box bottom sits below the baseline by its FNI
-                # baseline offset (1000/em), so descenders (g, p, q, y) drop
-                # under the line instead of resting on it.
-                drop = round(getattr(glyph, "baseline_offset", 0) / 1000 * em)
+                # baseline offset, so descenders (g, p, q, y) drop under the
+                # line instead of resting on it. Like the advance, the offset
+                # is in 1000ths of an em for relative fonts, else in pels at
+                # the metric resolution (the same factor as the bitmap).
+                base_off = getattr(glyph, "baseline_offset", 0)
+                drop = round(base_off / 1000 * em) if emb.relative_metrics \
+                    else round(base_off * pel)
+                # The box's left edge sits at the pen plus its A-space (left
+                # side bearing), scaled the same unit-base way, so a glyph
+                # with a small/negative bearing (e.g. 'j') doesn't crowd the
+                # next one — its ink stays inside its own advance cell.
+                lb = getattr(glyph, "left_bearing", 0)
+                bear = round(lb / 1000 * em) if emb.relative_metrics \
+                    else round(lb * pel)
                 page.images.append(
                     ImageRef(
-                        x=ox + lx, y=oy - h + drop, width=w, height=h,
+                        x=ox + lx + bear, y=oy - h + drop, width=w, height=h,
                         mime="image/png", data=png, crisp=crisp,
                         recolor=recolor, rotate=rot,
                     )
