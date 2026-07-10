@@ -456,9 +456,18 @@ def _missing_resources(parsed: List[StructuredField]) -> List[Dict[str, Any]]:
                if f.sf_id == sid and f.token_name}
         for kind, sid in _EMBED_FIELDS.items()
     }
+    # A coded-font name's 2nd character is a rotation/GRID selector, so a
+    # reference to "X1ARBF" is satisfied by an embedded "X0ARBF"; compare
+    # coded fonts rotation-insensitively so resolved fonts aren't flagged.
+    def _norm(name: str) -> str:
+        return name[0] + name[2:] if len(name) >= 2 else name
+
+    embedded_cf_norm = {_norm(n) for n in embedded["coded font"]}
     missing: List[Dict[str, Any]] = []
     for kind in ("coded font", "code page", "character set"):
         for name in sorted(refs[kind] - embedded[kind]):
+            if kind == "coded font" and _norm(name) in embedded_cf_norm:
+                continue  # present under a different rotation selector
             codec = (
                 codec_for_codepage_name(name) if kind == "code page" else None
             )

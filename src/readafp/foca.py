@@ -21,7 +21,7 @@ Reference: Font Object Content Architecture Reference, AFPC-0001-06
 import logging
 import struct
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from readafp import cff, type1
 from readafp.ioca import pack_png
@@ -38,6 +38,12 @@ FNI = 0xD38C89  # Font Index
 FNM = 0xD3A289  # Font Patterns Map
 FNG = 0xD3EE89  # Font Patterns
 FNN = 0xD3AB89  # Font Name Map (GCGID -> character name)
+
+# Coded-font structured-field identifiers (category X'8A'). A coded font
+# ties a font character set to a code page; its CFI carries both names.
+BCF = 0xD3A88A  # Begin Coded Font
+ECF = 0xD3A98A  # End Coded Font
+CFI = 0xD38C8A  # Coded Font Index (char-set name + code-page name)
 
 # FNC byte 1, Pattern Technology Identifier.
 PATTECH_RASTER = 0x05  # Laser Matrix N-bit Wide (bitmap glyphs)
@@ -100,6 +106,8 @@ class Font:
     outline_glyphs: Dict[str, "type1.Glyph"] = field(default_factory=dict)
     resolution: int = 0  # raster pattern resolution (pels/inch), from FNC
     point_size: float = 0.0  # nominal font size (points), from FND
+    weight_class: int = 0  # FND WeightClass (5 = medium, >=7 = bold), 0 = n/a
+    relative_metrics: bool = False  # FNC unit base X'02': metrics in 1000/em
 
     @property
     def is_raster(self) -> bool:
@@ -406,6 +414,53 @@ def parse_code_page(cpi: bytes) -> Dict[int, str]:
     return out
 
 
+def _fnc_resolution(fnc: bytes) -> int:
+    """Raster pattern resolution (pels/inch) from a Font Control field.
+
+    Prefers the optional shape resolution (XfrUnits, bytes 24-25); when it
+    is zero or absent — a short 22-byte FNC omits it — falls back to the
+    font-metric resolution (XftUnits, bytes 6-7). Both are units per
+    10-inch base, so X'0BB8' (3000) is 300 dpi.
+    """
+    for off in (24, 6):
+        if len(fnc) >= off + 2:
+            val = struct.unpack(">H", fnc[off : off + 2])[0]
+            if val:
+                return val // 10
+    return 0
+
+
+def parse_coded_fonts(
+    fields: List[StructuredField],
+) -> Dict[str, Tuple[str, str]]:
+    """Map each coded-font name to its (char-set, code-page) names.
+
+    A coded font (BCF...ECF, category X'8A') binds a font character set to
+    a code page; its Coded Font Index (CFI) names both — bytes 0-7 the
+    character set, bytes 8-15 the code page. Single-byte fonts carry one
+    CFI; we keep the first. This is the classic AFP mapping an MCF reaches
+    through when it names a coded font (FQN X'8E') rather than the char
+    set and code page directly.
+    """
+    out: Dict[str, Tuple[str, str]] = {}
+    name = ""
+    in_cf = False
+    for f in fields:
+        if f.sf_id == BCF:
+            in_cf = True
+            name = _decode_name(f.data[:8])
+        elif f.sf_id == ECF:
+            in_cf = False
+            name = ""
+        elif in_cf and f.sf_id == CFI and name and name not in out:
+            if len(f.data) >= 16:
+                cs = _decode_name(f.data[:8])
+                cp = _decode_name(f.data[8:16])
+                if cs:
+                    out[name] = (cs, cp)
+    return out
+
+
 def parse_fonts(fields: List[StructuredField]) -> List[Font]:
     """Extract every BFN...EFN font character set from a parsed file.
 
@@ -470,17 +525,26 @@ def parse_fonts(fields: List[StructuredField]) -> List[Font]:
                                    "%s: %s", name, exc)
                 outline_format = _sniff_outline_format(fng)
                 units_per_em, outline_glyphs = _decode_outlines(fng, chars)
-            # FNC pattern resolution (bytes 24-25, pels per 10 inches) and
-            # FND nominal point size (bytes 34-35, tenths of a point) give
-            # the pel↔point↔em relationship the renderer needs.
-            resolution = (
-                struct.unpack(">H", fnc[24:26])[0] // 10
-                if len(fnc) >= 26 else 0
-            )
+            # FNC raster resolution: the optional shape resolution (XfrUnits,
+            # bytes 24-25) when present, else the font-metric resolution
+            # (XftUnits, bytes 6-7) — the pattern is stored at the metric
+            # resolution unless a distinct shape resolution is declared. Both
+            # are units per 10-inch base (X'0BB8' = 3000 = 300 dpi). A short
+            # 22-byte FNC (no shape-resolution fields) still carries XftUnits.
+            resolution = _fnc_resolution(fnc)
+            # FND nominal point size (bytes 34-35, tenths of a point) and
+            # WeightClass (byte 32, 5 = medium, >=7 = bold) — the latter is
+            # the reliable weight signal when the typeface name omits "BOLD".
             point_size = (
                 struct.unpack(">H", fnd[34:36])[0] / 10
                 if len(fnd) >= 36 else 0.0
             )
+            weight_class = fnd[32] if len(fnd) >= 33 else 0
+            # FNC unit base (byte 4): X'00' = fixed 10-inch (FNI increments in
+            # pels), X'02' = relative (increments in 1000ths of an em). This
+            # decides how the renderer converts a character increment into the
+            # inline advance.
+            relative_metrics = len(fnc) >= 5 and fnc[4] == 0x02
             fonts.append(
                 Font(
                     name=name,
@@ -494,6 +558,8 @@ def parse_fonts(fields: List[StructuredField]) -> List[Font]:
                     outline_glyphs=outline_glyphs,
                     resolution=resolution,
                     point_size=point_size,
+                    weight_class=weight_class,
+                    relative_metrics=relative_metrics,
                 )
             )
     return fonts

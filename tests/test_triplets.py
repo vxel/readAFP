@@ -12,6 +12,8 @@ from readafp.triplets import (
     describe_field,
     describe_triplet,
     field_triplets,
+    mcf_coded_fonts,
+    mcf_font_resources,
     parse_mcf_codepages,
 )
 
@@ -144,6 +146,39 @@ def test_mcf1_sample_labels_cp1140() -> None:
     rows = describe_field(mcf)
     assert "code page T1001140 → cp1140" in rows[0]["detail"]
     assert "character set C0AAAAN1" in rows[0]["detail"]
+
+
+def test_mcf2_coded_font_fqn() -> None:
+    # A format-2 MCF that names a coded font (FQN X'8E') beside the X'24'
+    # Resource Local Id — the classic mapping readAFP now follows.
+    def group(lid: int, cf: str) -> bytes:
+        name = cf.encode("cp500")
+        fqn = bytes([2 + 2 + len(name), 0x02, 0x8E, 0x00]) + name
+        rlid = bytes([0x04, 0x24, 0x05, lid])
+        body = fqn + rlid
+        return (len(body) + 2).to_bytes(2, "big") + body
+
+    data = group(1, "X0TRTWSP") + group(2, "X0TRTABC")
+    assert mcf_coded_fonts(data, format1=False) == {1: "X0TRTWSP", 2: "X0TRTABC"}
+    # No char-set / code-page FQN present, so those come back empty.
+    assert mcf_font_resources(data, format1=False) == {1: (None, None),
+                                                        2: (None, None)}
+
+
+def test_mcf1_ff_prefixed_name_is_absent() -> None:
+    # A format-1 group naming only a coded font, with the code-page and
+    # char-set slots filled X'FFFF0000…' (the "not present" sentinel):
+    # those slots must decode to None, not garbage, so the coded-font name
+    # is used instead.
+    rg_len = 30
+    header = bytes([rg_len, 0, 0, 0])
+    cf = "X1ARBF  ".encode("cp500")            # 8-byte coded font name
+    absent = b"\xff\xff" + b"\x00" * 6         # partial-FF sentinel
+    group = bytes([1, 0, 0, 0]) + cf + absent + absent + b"\x00\x00"
+    assert len(group) == rg_len
+    data = header + group
+    assert mcf_coded_fonts(data, format1=True) == {1: "X1ARBF"}
+    assert mcf_font_resources(data, format1=True) == {1: (None, None)}
 
 
 def test_describe_field_health_mdr() -> None:

@@ -123,7 +123,53 @@ def _raster_emb_font(point_size: float = 24.0) -> _EmbeddedFont:
         ref_height=8,
         resolution=300,
         point_size=point_size,
+        relative_metrics=True,  # char_increment 500 is 1000ths of an em
     )
+
+
+def test_symbol_hidden_at_control_codepoint_uses_embedded_glyph() -> None:
+    # A byte the code page labels a control/space (0xA0 -> NBSP in cp1252) but
+    # whose embedded glyph is a real symbol — e.g. a euro sign a producer put
+    # at X'A0' — must render as that embedded glyph. Otherwise the substitute
+    # font decodes it to invisible whitespace and the symbol is lost. It draws
+    # even below the small-font display gate, since substitution yields nothing.
+    png = _glyph_png(b"\xff" * 8, 8, 8)
+    glyph = Glyph(gcgid="SC050000", width=8, height=8, char_increment=500,
+                  png=png, baseline_offset=0)
+    emb = _EmbeddedFont(
+        cp_map={0xA0: "SC050000"},
+        glyphs={"SC050000": glyph},
+        ref_height=8, resolution=300, point_size=10.0,  # below the 20pt gate
+        relative_metrics=True,
+    )
+    page = Page(units_per_inch=1440)
+    state = _TextState(
+        font_codepages={7: "cp1252"},   # byte 0xA0 decodes to NBSP
+        embedded_text_fonts={7: emb},
+        embed_small_fonts=False,         # gate on: small glyphs would substitute
+    )
+    state.font_id = 7
+    state.apply(ControlSequence(cs_type=0xDA, params=b"\xa0"), page)
+    assert len(page.images) == 1          # the euro glyph is drawn
+    assert not page.texts                 # not lost as an empty NBSP run
+
+
+def test_plain_space_run_is_not_forced_to_embedded_glyph() -> None:
+    # A run that is just a regular space must NOT trigger the hidden-symbol
+    # path — only genuinely invisible non-space code points do.
+    png = _glyph_png(b"\x00" * 8, 8, 8)
+    glyph = Glyph(gcgid="SP010000", width=8, height=8, char_increment=500,
+                  png=png, baseline_offset=0)
+    emb = _EmbeddedFont(
+        cp_map={0x20: "SP010000"}, glyphs={"SP010000": glyph},
+        ref_height=8, resolution=300, point_size=10.0, relative_metrics=True,
+    )
+    page = Page(units_per_inch=1440)
+    state = _TextState(font_codepages={7: "cp1252"},
+                       embedded_text_fonts={7: emb})
+    state.font_id = 7
+    state.apply(ControlSequence(cs_type=0xDA, params=b"\x20"), page)
+    assert not page.images and not page.texts
 
 
 def test_embedded_glyph_applies_stc_color() -> None:

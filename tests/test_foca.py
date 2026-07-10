@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from readafp.foca import PATTECH_CID, PATTECH_RASTER, parse_fonts
+from readafp.foca import (
+    PATTECH_CID,
+    PATTECH_RASTER,
+    _fnc_resolution,
+    parse_coded_fonts,
+    parse_fonts,
+)
 from readafp.parser import iter_fields, parse_file
 from readafp.ptoca import extract_pages
 from readafp.render import page_to_svg
@@ -14,6 +20,7 @@ TESTDATA = Path(__file__).parent.parent / "testdata"
 SAMPLE1 = TESTDATA / "Sample Files" / "Sample 1.afp"
 OUTLINE = TESTDATA / "github-samples" / "afplib" / "C0X00006.afp"
 FOCA_SAMPLE = TESTDATA / "foca_sample.afp"
+CODED_FONT_SAMPLE = TESTDATA / "coded_font_sample.afp"
 
 
 def _png_dims(png: bytes) -> tuple:
@@ -184,3 +191,55 @@ def test_raster_font_carries_resolution_pointsize_and_baseline() -> None:
     assert by_id["LP010000"].baseline_offset > 0  # 'p'
     assert by_id["LG010000"].baseline_offset > 0  # 'g'
     assert by_id["LA010000"].baseline_offset == 0  # 'a'
+
+
+def test_fnc_resolution_prefers_shape_then_metric() -> None:
+    # Shape resolution (XfrUnits, bytes 24-25) wins when present.
+    fnc = bytearray(26)
+    struct.pack_into(">H", fnc, 6, 3000)   # XftUnits metric res 300 dpi
+    struct.pack_into(">H", fnc, 24, 2400)  # XfrUnits shape res 240 dpi
+    assert _fnc_resolution(bytes(fnc)) == 240
+    # When the shape field is absent (short 22-byte FNC) or zero, fall back
+    # to the font-metric resolution (XftUnits).
+    struct.pack_into(">H", fnc, 24, 0)
+    assert _fnc_resolution(bytes(fnc)) == 300
+    assert _fnc_resolution(bytes(fnc[:22])) == 300
+
+
+def test_parse_coded_fonts_resolves_char_set_and_code_page() -> None:
+    # A coded font (BCF/CFI) binds a char set + code page; parse_coded_fonts
+    # recovers both names keyed by the coded-font name.
+    if not CODED_FONT_SAMPLE.exists():
+        pytest.skip("coded_font_sample.afp not generated")
+    coded = parse_coded_fonts(list(iter_fields(CODED_FONT_SAMPLE.read_bytes())))
+    assert coded["X0TSTB00"] == ("C0AAAB00", "T1TSTB00")
+
+
+def test_char_sets_carry_weight_and_unit_base() -> None:
+    # foca_sample embeds a TIMES-ROMAN (WeightClass 7 = bold) and a COURIER
+    # (WeightClass 5 = medium), both relative-metric (increments in 1000/em)
+    # at 300 dpi — the metrics the coded-font resolution relies on.
+    fonts = {f.name: f for f in parse_fonts(list(iter_fields(
+        FOCA_SAMPLE.read_bytes())))}
+    assert fonts["C0AAAB00"].weight_class == 7
+    assert fonts["C0AAAD00"].weight_class == 5
+    assert fonts["C0AAAB00"].relative_metrics is True
+    assert fonts["C0AAAB00"].resolution == 300
+
+
+def test_coded_font_document_uses_embedded_font_family() -> None:
+    # The regression this change fixes: a document that maps its font through
+    # a coded-font name (MCF FQN X'8E') — here by a rotation-selector name
+    # (X1…) whose resource is embedded as X0… — must resolve to the embedded
+    # char set's face (TIMES-ROMAN -> serif), not fall back to bare "Arial".
+    if not CODED_FONT_SAMPLE.exists():
+        pytest.skip("coded_font_sample.afp not generated")
+    fields = list(iter_fields(CODED_FONT_SAMPLE.read_bytes()))
+    runs = [t for p in extract_pages(fields) for t in p.texts]
+    assert runs, "no text runs"
+    assert all(t.font_family == "Times New Roman, serif" for t in runs)
+    assert all(t.font_family != "Arial" for t in runs)  # not the bare default
+    # With small fonts enabled the run draws in the file's own raster glyphs.
+    imgs = [im for p in extract_pages(fields, embed_small_fonts=True)
+            for im in p.images]
+    assert imgs, "embedded glyphs not drawn"

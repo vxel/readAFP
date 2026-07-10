@@ -491,10 +491,13 @@ def _mcf1_groups(
 
     def name(rg: bytes, start: int) -> Optional[str]:
         raw = rg[start : start + 8]
-        if raw == b"\xff" * 8:
+        # X'FF' fill is the "not present" sentinel; a name never begins with
+        # it. Some producers write only a partial fill (X'FFFF0000…') for an
+        # absent slot, so treat any leading X'FF' as absent, not garbage.
+        if not raw or raw[0] == 0xFF:
             return None
         try:
-            return raw.decode("cp500").strip() or None
+            return raw.decode("cp500").strip("\x00 ").strip() or None
         except UnicodeDecodeError:
             return None
 
@@ -616,6 +619,40 @@ def mcf_font_resources(
                 cs_name = _ebcdic(tdata[2:])
         if local_id is not None:
             out[local_id] = (cp_name, cs_name)
+        pos += group_len
+    return out
+
+
+def mcf_coded_fonts(data: bytes, format1: bool) -> Dict[int, str]:
+    """Map each local font id to a coded-font name, when named directly.
+
+    The classic AFP mapping: instead of the char set (FQN X'86') and code
+    page (FQN X'85') separately, an MCF group names a single coded font
+    (FQN X'8E' in format 2, the fixed coded-font slot in format 1) that
+    itself binds the two. The caller resolves that name through the
+    embedded coded fonts (see :func:`readafp.foca.parse_coded_fonts`).
+    """
+    if format1:
+        return {
+            local_id: cf
+            for local_id, cf, _cp, _fcs, _raw in _mcf1_groups(data)
+            if cf
+        }
+    out: Dict[int, str] = {}
+    pos = 0
+    while pos + 2 <= len(data):
+        group_len = _u16(data, pos)
+        if group_len < 2 or pos + group_len > len(data):
+            break
+        local_id: Optional[int] = None
+        cf_name: Optional[str] = None
+        for tid, tdata in iter_triplets(data[pos + 2 : pos + group_len]):
+            if tid == 0x24 and len(tdata) >= 2 and tdata[0] in (0x00, 0x05):
+                local_id = tdata[1]
+            elif tid == 0x02 and len(tdata) >= 3 and tdata[0] == 0x8E:
+                cf_name = _ebcdic(tdata[2:])
+        if local_id is not None and cf_name:
+            out[local_id] = cf_name
         pos += group_len
     return out
 

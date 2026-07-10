@@ -92,6 +92,8 @@ advance; producers vary it per line to justify text).
 
 **MCF/MDR** — MCF declares EBCDIC codepage per font local-id; MDR maps local-id to font family/weight/size via FQN triplets. Both parsed in `ptoca.py`; `parse_mcf_codepages()` also in `triplets.py`.
 
+**Coded-font indirection (MCF → BCF/CFI → char set + code page).** An MCF group can name its char set (FQN X'86') and code page (X'85') directly, **or** name a single *coded font* — FQN X'8E' in format 2 (`triplets.mcf_coded_fonts`), or the fixed coded-font slot in format 1 (`_mcf1_groups`; a slot filled X'FFFF00…' is the "not present" sentinel and decodes to `None`). A coded font (BCF…ECF, category X'8A') binds a char set + code page in its CFI field (`foca.parse_coded_fonts`: CFI bytes 0-7 = char set, 8-15 = code page). `extract_pages` resolves the X'8E' name through that map, then feeds the existing char-set machinery (typeface / glyphs / size / weight). The 2nd char of a coded-font name is a rotation/GRID selector, so a reference to `X1ARBF` resolves to the embedded `X0ARBF` via a rotation-insensitive index (`name[0]+name[2:]`). Font local ids are scoped per active environment group, so a later MCF **overwrites** an earlier one's mapping (but never an MDR's, tracked in `mdr_lids`). This is the classic fully self-contained AFP layout (coded fonts + char sets + code pages all embedded); before this such files rendered entirely in the default Arial. Fixture: `testdata/coded_font_sample.afp` (built by `tools/make_coded_font_sample.py`).
+
 **TRN decoding** — if high byte of first two bytes is `0x00`, treat as UTF-16BE (TrueType). Otherwise decode as EBCDIC using the codepage for the active font (from MCF), falling back to the user-selected codepage. **ASCII/Latin-1 autodetect:** when the font declares *no* code page (the MCF names only a coded font, so `codepage` is a pure fallback), `_looks_like_ascii()` decides per-run whether the bytes are ISO-8859-1 rather than EBCDIC and decodes them as `latin-1`. Some producers ship coded fonts with an unembedded single-byte ASCII code page. The decisive signal is the **0x80-0x9F** byte range: ISO-8859-1 C1 controls that real text never uses, but EBCDIC lowercase letters a-r — so any byte there vetoes the ASCII verdict, keeping EBCDIC text (even a mostly-ASCII-padded run like the `large_ibm273` fixture) as EBCDIC while Latin-1 accents (all ≥ 0xA0) pass. It is per-run, so a file mixing both resolves each run on its own evidence, and never overrides a code page the file/user actually declared. Also enabled for the inspector Find search.
 
 **IOCA images** — BIM…EIM bracket; IPD fields carry concatenated self-defining fields (SDFs). Key SDFs: 0x94 Image Size, 0x95 Image Encoding, 0x96 IDE Size, 0xFE92 Image Data, 0xFE9C Band Image Data (CMYK planes). Compressions: 0x03 = uncompressed, 0x83 = JPEG. Bilevel inverted (IOCA 1 = mark/dark).
@@ -197,6 +199,7 @@ Category codes: `0xA8`=Document, `0xAF`=Page, `0x9B`=Presentation Text, `0xFB`=I
 - `sample1_health/`: primary render target — 1-page modern TrueType AFP with PDF ground truth.
 - `fop-pairs/`: multi-page AFP with IOCA images; paired PDF ground truth for visual comparison.
 - `github-samples/`: edge cases including FOCA raster fonts, unbracketed PTX, IOCA variants.
+- `coded_font_sample.afp`: synthetic self-contained AFP (built by `tools/make_coded_font_sample.py` from the public `foca_sample.afp` char set) that **embeds its font** — a raster char set, a code page, and a coded font — and maps its page text via a coded-font name (MCF FQN X'8E'), referenced by a rotation-selector name (`X1…`) resolved to the embedded `X0…`. The test of the coded-font indirection chain (see MCF/MDR above).
 
 ## FOCA (font objects)
 
@@ -296,12 +299,25 @@ both (`id N → NAME` for MPO, `overlay 'NAME' @ offset x,y` for IPO).
   so Copy-text / `.txt` export stays complete.
 
   Raster embedded glyphs are sized and spaced from real metrics:
-  `foca.Font` carries the pattern **resolution** (FNC bytes 24-25, pels/10
-  inch) and **point size** (FND bytes 34-35), so a pattern pel maps to
-  `upi/resolution` L-units and the pen advances by each glyph's FNI
-  **character increment** (1000/em) × the em in L-units — not the bitmap
-  width. Each glyph's FNI **baseline offset** (bytes 12-13, 1000/em) drops
-  descenders (g, p, q, y) below the line.
+  `foca.Font` carries the pattern **resolution** (`_fnc_resolution`: the
+  optional shape resolution XfrUnits, FNC bytes 24-25, else the font-metric
+  resolution XftUnits, bytes 6-7 — a short 22-byte FNC omits XfrUnits but
+  always has XftUnits; both are units per 10-inch base, X'0BB8'=300 dpi) and
+  **point size** (FND bytes 34-35), so a pattern pel maps to `upi/resolution`
+  L-units. The pen advance depends on the **FNC unit base** (byte 4):
+  **relative** fonts (X'02') carry the FNI character increment in 1000ths of
+  an em → advance = `inc/1000 × em`; **fixed** 10-inch fonts (X'00') carry it
+  in **pels** → advance = `inc × pel` (the same metric→L-unit factor as the
+  bitmap). Using the em formula on a fixed-metric font collapses the advance
+  and glyphs pile up (the failure mode on fixed-metric fonts whose
+  increments are ~12-33 pels, not ~500/em). Each glyph's FNI **baseline
+  offset** (bytes 12-13,
+  1000/em) drops descenders (g, p, q, y) below the line. **Weight** comes
+  from the FND **WeightClass** (byte 32, ≥7 = bold) — authoritative when the
+  typeface name is just "Arial" for both weights. **Verdana** is a recognized
+  substitute typeface (web-safe, its own metrics). Small 1-bit raster glyphs
+  read rough when downscaled (a 6pt `g` can look like `9`), which is exactly
+  why the default gate substitutes them and the embedded path is opt-in.
 
   **Size gate** (`_EMBED_MIN_POINT_SIZE`, 20pt): raster glyphs are 1-bit
   bitmaps — crisp at display sizes but thin and aliased once a small body
@@ -313,6 +329,18 @@ both (`id N → NAME` for MPO, `overlay 'NAME' @ offset x,y` for IPO).
   screenshot). Two earlier all-or-nothing attempts (rendering *all* body
   text as bitmaps, nearest-neighbor) were backed out for looking worse than
   substitute.
+
+  **Hidden-symbol exception to the gate:** when a run's substitute decoding
+  collapses to only invisible characters (NBSP/controls) yet isn't a plain
+  space, and the embedded font has a real glyph for its byte(s),
+  `_emit_embedded_glyphs` is called with `force=True` to draw the glyph even
+  below the size gate. Some producers place a **euro sign at X'A0'** — a byte
+  the code page labels U+00A0 (NBSP) and the font draws as €; the substitute
+  path would strip it to nothing, so the amount's € silently vanished. The
+  code page carries no clue (its GCGID is the algorithmic `UNIC00A0`, and the
+  CPC is the plain single-byte form with no explicit Unicode); only the glyph
+  shape is €, so drawing the embedded glyph is the only way to keep it. A
+  plain ASCII space (0x20) does *not* trigger this.
 
   **`embed_small_fonts` opt-in** (off by default): a UI checkbox ("Small
   text in embedded font") threaded through `build_context` →

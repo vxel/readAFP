@@ -20,13 +20,15 @@ from dataclasses import dataclass, field, replace
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from readafp.bcoca import barcode_png, parse_barcode
-from readafp.foca import Font, parse_code_page, parse_fonts
+from readafp.foca import Font, parse_code_page, parse_coded_fonts, parse_fonts
 from readafp.gcgid import bridge_code_page
 from readafp.goca import GocaGraphic, draw_goca
 from readafp.ioca import cmyk_jpeg_bands, image_blob, parse_image_segment
 from readafp.parser import StructuredField
 from readafp.triplets import (
+    codec_for_codepage_name,
     iter_triplets,
+    mcf_coded_fonts,
     mcf_font_resources,
     parse_mcf_codepages,
 )
@@ -405,6 +407,8 @@ def _substitute_font(typeface: str) -> Optional[Tuple[str, str]]:
         return "Courier New, monospace", weight
     if "TIMES" in t or "ROMAN" in t or "SERIF" in t:
         return "Times New Roman, serif", weight
+    if "VERDANA" in t:  # web-safe; keep its own metrics rather than Arial
+        return "Verdana, sans-serif", weight
     if "HELVETICA" in t or "ARIAL" in t or "SANS" in t:
         return "Arial, sans-serif", weight
     return None
@@ -534,6 +538,7 @@ class _EmbeddedFont:
     codec: Optional[str] = None  # codec for the hidden text-extraction layer
     resolution: int = 0  # raster font pattern resolution (pels/inch)
     point_size: float = 0.0  # raster font nominal size (points)
+    relative_metrics: bool = False  # FNI increments in 1000/em, not pels
 
 
 # A TRN run is drawn in the embedded font only when at least this fraction
@@ -655,6 +660,18 @@ class _TextState:
             cp = self.font_codepages.get(self.font_id, self.codepage)
             text, n_stripped, used_codec, n_sub = _decode_trn_counted(
                 p, cp, autodetect=not declared)
+            # A run the substitute font can't render — its bytes decode to
+            # only invisible characters (NBSP/controls), yet it isn't a plain
+            # space — is often a symbol the producer placed at a control code
+            # point whose real shape lives only in the embedded glyph (e.g. a
+            # euro sign at X'A0', which the code page labels U+00A0). Draw the
+            # embedded raster glyph so the symbol isn't silently lost,
+            # bypassing the small-font display gate.
+            if (emb is not None and emb.glyphs and not text.strip()
+                    and any(c != " " for c in text)
+                    and self._emit_embedded_glyphs(page, p, emb, size,
+                                                    force=True)):
+                return
             if (
                 self.wrap_width is not None
                 and self.i > 0
@@ -791,7 +808,8 @@ class _TextState:
             )
 
     def _emit_embedded_glyphs(
-        self, page: Page, data: bytes, emb: "_EmbeddedFont", size: int
+        self, page: Page, data: bytes, emb: "_EmbeddedFont", size: int,
+        force: bool = False,
     ) -> bool:
         """Draw a TRN run with the file's own embedded raster glyphs.
 
@@ -811,7 +829,7 @@ class _TextState:
         # anti-aliased (crisp=False) rather than nearest-neighbor, so the
         # downscaled 1-bit shapes don't read as blocky.
         small = emb.point_size < _EMBED_MIN_POINT_SIZE
-        if small and not self.embed_small_fonts:
+        if small and not self.embed_small_fonts and not force:
             return False
         crisp = not small
         if not self._embed_covers(data, emb, emb.glyphs):
@@ -847,7 +865,15 @@ class _TextState:
                 lx += default_adv
                 continue
             inc = getattr(glyph, "char_increment", 0)
-            adv = round(inc / 1000 * em) if inc else default_adv
+            # The FNI character increment is in the font's metric unit base:
+            # 1000ths of an em for relative fonts, else pels at the metric
+            # resolution (the same pel→L-unit factor as the bitmap).
+            if not inc:
+                adv = default_adv
+            elif emb.relative_metrics:
+                adv = round(inc / 1000 * em)
+            else:
+                adv = round(inc * pel)
             png = getattr(glyph, "png", None)
             if png and glyph.height and glyph.width:
                 w = max(1, round(glyph.width * pel))
@@ -1254,7 +1280,7 @@ def extract_pages(
     # Raster char-set metrics (resolution dpi, point size) for sizing and
     # advancing the embedded bitmap glyphs at their true scale.
     char_set_metrics = {
-        font.name: (font.resolution, font.point_size)
+        font.name: (font.resolution, font.point_size, font.relative_metrics)
         for font in _parsed_fonts
         if font.glyphs and font.name
     }
@@ -1272,6 +1298,28 @@ def extract_pages(
         for font in _parsed_fonts
         if font.name and font.typeface
     }
+    # FND WeightClass per char set — the reliable bold signal when the
+    # typeface name doesn't spell out "BOLD" (e.g. an Arial-Bold char set
+    # whose FND face name is still just "Arial").
+    char_set_weights = {
+        font.name: font.weight_class
+        for font in _parsed_fonts
+        if font.name and font.weight_class
+    }
+    # Coded-font name -> (char set, code page), for MCF groups that reach
+    # their char set + code page indirectly through a coded font (FQN X'8E'
+    # or a format-1 slot) instead of naming both directly. The 2nd character
+    # of a coded-font name is a rotation/GRID selector, so a page may
+    # reference "X1ARBF" while the file embeds the identical set as "X0ARBF":
+    # a rotation-insensitive index (name[0] + name[2:]) resolves that.
+    coded_fonts = parse_coded_fonts(fields)
+    coded_fonts_norm: Dict[str, Tuple[str, str]] = {}
+    for _cf_name, _cf_pair in coded_fonts.items():
+        if len(_cf_name) >= 2:
+            coded_fonts_norm.setdefault(_cf_name[0] + _cf_name[2:], _cf_pair)
+    # Local ids whose font was set by an MDR (richer family/size info than a
+    # coded-font name); a later MCF must not clobber those.
+    mdr_lids: set = set()
     embedded_text_fonts: Dict[int, _EmbeddedFont] = {}
     resources: Dict[str, bytes] = {}
     container: Optional[str] = None
@@ -1431,17 +1479,36 @@ def extract_pages(
                 pages.append(current)
             current, state = None, None
         elif f.sf_id == 0xD3ABC3:  # MDR maps fonts to SCFL local ids
-            fonts.update(parse_mdr_fonts(f.data))
+            mdr = parse_mdr_fonts(f.data)
+            fonts.update(mdr)
+            mdr_lids.update(mdr)
         elif f.sf_id in (0xD3AB8A, 0xD3B18A):  # MCF labels coded fonts
             fmt1 = f.sf_id == 0xD3B18A
             for local_id, cp in parse_mcf_codepages(f.data, format1=fmt1).items():
                 if cp.codec:
                     font_codepages[local_id] = cp.codec
+            # Some MCFs name a coded font (FQN X'8E') instead of the char set
+            # and code page directly; that coded font binds the two, so
+            # resolve its embedded CFI to recover both names.
+            mcf_cf = mcf_coded_fonts(f.data, format1=fmt1)
             # Pair each local id with its embedded code page + character set
             # so the run can be drawn in the file's own raster glyphs.
             for lid, (cp_name, cs_name) in mcf_font_resources(
                 f.data, format1=fmt1
             ).items():
+                if not cs_name and lid in mcf_cf:
+                    cf_name = mcf_cf[lid]
+                    resolved = coded_fonts.get(cf_name)
+                    if not resolved and len(cf_name) >= 2:
+                        resolved = coded_fonts_norm.get(cf_name[0] + cf_name[2:])
+                    if resolved:
+                        cs_name, cp_name = resolved[0], resolved[1]
+                        # The coded font's code page resolves the byte
+                        # encoding for this id — feed the substitute-font
+                        # fallback and hidden text layer too.
+                        codec = codec_for_codepage_name(cp_name or "")
+                        if codec:
+                            font_codepages.setdefault(lid, codec)
                 cp_map = code_pages.get(cp_name or "")
                 glyphs = char_set_glyphs.get(cs_name or "")
                 outlines = char_set_outlines.get(cs_name or "")
@@ -1460,10 +1527,12 @@ def extract_pages(
                 codec = font_codepages.get(lid)  # for the hidden text layer
                 if cp_map and glyphs:
                     ref = max((g.height for g in glyphs.values()), default=1)
-                    res, psize = char_set_metrics.get(cs_name or "", (0, 0.0))
+                    res, psize, rel = char_set_metrics.get(
+                        cs_name or "", (0, 0.0, False))
                     embedded_text_fonts[lid] = _EmbeddedFont(
                         cp_map, glyphs, ref, codec=codec,
                         resolution=res, point_size=psize,
+                        relative_metrics=rel,
                     )
                 elif cp_map and outlines and outlines[0]:
                     outline_glyphs, em = outlines
@@ -1477,13 +1546,25 @@ def extract_pages(
                 # fonts). MDR, if present, already set a better one.
                 sub = (_substitute_font(char_set_typefaces.get(cs_name or "", ""))
                        or _coded_font_substitute(cs_name or ""))
-                # The external char-set name also encodes its point size, the
-                # only size signal when the file embeds no font and has no MDR.
-                size_pt = _coded_font_point_size(cs_name or "")
-                if sub and lid not in fonts:
+                # The FND WeightClass is authoritative for bold (typeface
+                # names like "Arial" don't spell it out); override the
+                # substitute's weight when the char set declares >= 7.
+                weight_cls = char_set_weights.get(cs_name or "", 0)
+                # Prefer the embedded char set's real FND point size; fall
+                # back to the size the external char-set name encodes (the
+                # only signal when the file embeds no font and has no MDR).
+                _res, _psize, _rel = char_set_metrics.get(
+                    cs_name or "", (0, 0.0, False))
+                size_pt = _psize or _coded_font_point_size(cs_name or "")
+                # A later MCF may remap a local id to a different coded font
+                # (font ids are scoped per active environment group), so let
+                # it overwrite an earlier MCF's mapping — but never an MDR's,
+                # which carries richer family/size information.
+                if sub and lid not in mdr_lids:
+                    weight = "bold" if weight_cls >= 7 else sub[1]
                     fonts[lid] = FontInfo(
-                        family=sub[0], weight=sub[1], size_pt=size_pt)
-                elif lid not in fonts and lid not in embedded_text_fonts:
+                        family=sub[0], weight=weight, size_pt=size_pt)
+                elif lid not in mdr_lids and lid not in embedded_text_fonts:
                     # External font whose typeface we can't even infer from the
                     # coded-font name (e.g. C0EXxxxx): register it anyway so the
                     # run is still flagged, drawn in the default Arial.

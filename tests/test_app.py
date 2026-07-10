@@ -115,6 +115,17 @@ def test_missing_resources_notes_builtin_codec() -> None:
     assert not any(r["kind"] == "character set" for r in missing)
 
 
+def test_self_contained_font_document_reports_no_missing() -> None:
+    # A self-contained document that references a coded font by a rotation-
+    # selector name (X1TSTB00) whose resource is embedded as X0TSTB00: the
+    # rotation-insensitive match keeps it off the missing-resource list.
+    sample = TESTDATA / "coded_font_sample.afp"
+    if not sample.exists():
+        pytest.skip("coded_font_sample.afp not generated")
+    missing = _missing_resources(parse_file(str(sample)))
+    assert not any(r["kind"] == "coded font" for r in missing)
+
+
 def test_no_missing_resources_for_clean_document() -> None:
     if not HEALTH_SAMPLE.exists():
         pytest.skip("test corpus not present")
