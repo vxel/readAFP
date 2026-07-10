@@ -267,8 +267,43 @@ def iter_control_sequences(data: bytes) -> Iterator[ControlSequence]:
         pos += length
 
 
+def _looks_like_ascii(params: bytes) -> bool:
+    """True when a byte run reads as ASCII/Latin-1 rather than EBCDIC.
+
+    AFP text is EBCDIC by default, but some producers ship coded fonts whose
+    code page is a single-byte ISO/ASCII page. 
+    When that code page resource isn't embedded and the
+    MCF names only the coded font, we have no declared encoding and would
+    otherwise decode ASCII bytes with the EBCDIC fallback.
+    Alphanumeric bytes are the tell: EBCDIC
+    letters/digits sit in 0x81-0xA9 / 0xC1-0xE9 / 0xF0-0xF9, ASCII ones in
+    0x30-0x39 / 0x41-0x5A / 0x61-0x7A — disjoint ranges. A run whose bytes
+    land mostly in the ASCII ranges reads as ASCII.
+
+    The decision is per-run, so a file that mixes both resolves
+    each run on its own evidence. The decisive guard is the 0x80-0x9F range:
+    in ISO-8859-1 those are C1 controls that real text never uses, but in
+    EBCDIC they are the lowercase letters a-r — so any byte there means the
+    run is EBCDIC (or otherwise not clean Latin-1) and vetoes the ASCII
+    verdict. This keeps EBCDIC lowercase text as EBCDIC even when a run is
+    padded with literal ASCII filler (a corpus cp273 fixture does exactly
+    that), while Latin-1 accents (é 0xE9, à 0xE0, nbsp 0xA0 — all
+    >= 0xA0) never trip it.
+    """
+    ascii_alnum = ebcdic_alnum = 0
+    for b in params:
+        if 0x80 <= b <= 0x9F:  # EBCDIC lowercase a-r / ISO-8859-1 C1 control
+            return False
+        if 0x30 <= b <= 0x39 or 0x41 <= b <= 0x5A or 0x61 <= b <= 0x7A:
+            ascii_alnum += 1
+        elif (0xA2 <= b <= 0xA9 or 0xC1 <= b <= 0xC9 or 0xD1 <= b <= 0xD9
+              or 0xE2 <= b <= 0xE9 or 0xF0 <= b <= 0xF9):
+            ebcdic_alnum += 1
+    return ascii_alnum > 0 and ascii_alnum > ebcdic_alnum
+
+
 def _decode_trn_counted(
-    params: bytes, codepage: str = "cp500"
+    params: bytes, codepage: str = "cp500", autodetect: bool = False
 ) -> Tuple[str, int, str, int]:
     """Decode TRN text, plus glyphs-stripped count and the codec used.
 
@@ -278,6 +313,12 @@ def _decode_trn_counted(
     map) and the codec actually applied (``"utf-16-be"`` for TrueType flows,
     else the EBCDIC code page) so a "fallback code page" note never fires on
     a Unicode run.
+
+    When ``autodetect`` is set — used only where no code page was declared
+    for the font, so ``codepage`` is a mere fallback — a run that reads as
+    ASCII/Latin-1 (see :func:`_looks_like_ascii`) is decoded as ``latin-1``
+    instead of blindly as EBCDIC. This never overrides a code page the file
+    (or user) actually declared.
     """
     if len(params) >= 2 and len(params) % 2 == 0:
         high_zeros = sum(1 for b in params[0::2] if b == 0)
@@ -287,11 +328,15 @@ def _decode_trn_counted(
             except UnicodeDecodeError:
                 pass
     used = codepage
-    try:
-        text = params.decode(codepage)
-    except (UnicodeDecodeError, LookupError):
-        text = params.decode("cp500", errors="replace")
-        used = "cp500"
+    if autodetect and _looks_like_ascii(params):
+        text = params.decode("latin-1")
+        used = "latin-1"
+    else:
+        try:
+            text = params.decode(codepage)
+        except (UnicodeDecodeError, LookupError):
+            text = params.decode("cp500", errors="replace")
+            used = "cp500"
     # X'3F' is the EBCDIC SUBSTITUTE character (U+001A): the byte a producer
     # writes when it cannot encode a glyph in the AFP code page. Apache FOP
     # uses it two ways — a lone X'3F' amid real text is its list bullet
@@ -306,15 +351,18 @@ def _decode_trn_counted(
     return stripped, len(text) - len(stripped), used, n_substitute
 
 
-def _decode_trn(params: bytes, codepage: str = "cp500") -> str:
+def _decode_trn(
+    params: bytes, codepage: str = "cp500", autodetect: bool = False
+) -> str:
     """Decode TRN text bytes: UTF-16BE for TrueType flows, else EBCDIC.
 
     ``codepage`` selects the EBCDIC decoder ring: the current font's
     MCF-labeled code page when the file declares one, else the user's
     choice. The UTF-16BE heuristic stays: text over Latin scripts has a
-    zero high byte for nearly every character.
+    zero high byte for nearly every character. ``autodetect`` is forwarded
+    to :func:`_decode_trn_counted`.
     """
-    return _decode_trn_counted(params, codepage)[0]  # text only
+    return _decode_trn_counted(params, codepage, autodetect)[0]  # text only
 
 
 def _strip_controls(text: str) -> str:
@@ -603,8 +651,10 @@ class _TextState:
                 # fall through and draw the whole run in a substitute font.
             # Default size is ~12pt in the page's own resolution (1440/inch
             # gives 240; FOP emits 240/inch where 12pt is just 40).
+            declared = self.font_id in self.font_codepages
             cp = self.font_codepages.get(self.font_id, self.codepage)
-            text, n_stripped, used_codec, n_sub = _decode_trn_counted(p, cp)
+            text, n_stripped, used_codec, n_sub = _decode_trn_counted(
+                p, cp, autodetect=not declared)
             if (
                 self.wrap_width is not None
                 and self.i > 0

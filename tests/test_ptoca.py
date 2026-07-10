@@ -16,6 +16,7 @@ from readafp.ptoca import (
     _TextState,
     _coded_font_point_size,
     _decode_trn,
+    _looks_like_ascii,
 )
 from readafp.foca import Glyph, _glyph_png
 from readafp.render import _glyph_ink_id, page_to_svg
@@ -409,6 +410,56 @@ def test_codepage_override_decodes_ibm273() -> None:
     assert "H{ll" in garbled
     readable = extract_pages(fields, codepage="cp273")[0].texts[0].text
     assert "Hällö Wörld" in readable
+
+
+def test_looks_like_ascii_discriminates_encodings() -> None:
+    # Genuine Latin-1 text: ASCII letters plus high-byte (>= 0xA0) accents.
+    assert _looks_like_ascii("Café à gogo".encode("latin-1"))
+    assert _looks_like_ascii(b"www.example.org/index")
+    # EBCDIC text: lowercase lands in 0x80-0x9F, which vetoes the ASCII call.
+    assert not _looks_like_ascii("hello world".encode("cp500"))
+    # An EBCDIC run padded with literal ASCII filler still reads as EBCDIC:
+    # the EBCDIC lowercase bytes veto it (the large_ibm273 fixture's shape).
+    assert not _looks_like_ascii(
+        "Hällö".encode("cp273") + b" filler ascii bytes here")
+    # No alphanumerics (all spaces/punctuation): not enough signal for ASCII.
+    assert not _looks_like_ascii(b"   ...   ")
+
+
+def _ascii_font_doc() -> bytes:
+    """A one-page AFP whose PTX carries raw ASCII/Latin-1 (not EBCDIC) text
+    and an EBCDIC run, with no MCF so no code page is declared."""
+    def trn(raw: bytes) -> bytes:
+        # escape, chained AMI(x)/AMB(y), then an unchained TRN of raw bytes.
+        return (
+            bytes.fromhex("2bd3" "04c70064" "04d300c8")
+            + bytes([2 + len(raw), 0xDA]) + raw
+        )
+
+    ptx = (
+        trn("Référence".encode("latin-1"))  # Latin-1 accents
+        + trn(b"www.example.org")                     # bare ASCII
+        + trn("Version".encode("cp500"))              # genuinely EBCDIC
+    )
+    return (
+        _sf(0xD3A8A8, b"\x00" * 8)   # BDT
+        + _sf(0xD3A8AF, b"\x00" * 8)  # BPG
+        + _sf(0xD3EE9B, ptx)          # PTX
+        + _sf(0xD3A9AF, b"\x00" * 8)  # EPG
+        + _sf(0xD3A9A8, b"\x00" * 8)  # EDT
+    )
+
+
+def test_ascii_coded_font_autodetected() -> None:
+    # A coded font whose single-byte ASCII code page isn't embedded (MCF names
+    # only the coded font) declares no code page, so the decoder must
+    # autodetect Latin-1 per run rather than garble the text as EBCDIC.
+    pages = extract_pages(list(iter_fields(_ascii_font_doc())))
+    runs = [t.text for p in pages for t in p.texts]
+    assert "Référence" in runs      # Latin-1 accents decoded
+    assert "www.example.org" in runs          # bare ASCII decoded
+    # A genuinely-EBCDIC run in the same stream stays EBCDIC.
+    assert "Version" in runs
 
 
 def test_implicit_page_corpus_large_ibm273() -> None:
