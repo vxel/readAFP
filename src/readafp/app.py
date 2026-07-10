@@ -506,7 +506,7 @@ def _field_search_text(field: StructuredField) -> str:
     """
     if field.sf_id == 0xD3EE9B:  # PTX
         runs = [
-            _decode_trn(cs.params)
+            _decode_trn(cs.params, autodetect=True)
             for cs in iter_control_sequences(field.data)
             if cs.cs_type == 0xDA  # TRN
         ]
