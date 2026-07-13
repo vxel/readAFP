@@ -118,11 +118,14 @@ def _image_markup(img: ImageRef) -> str:
     parts = [f'<g style="isolation:isolate"{fid}>']
     for ink, blob in zip("cmyk", img.bands):
         b64 = base64.b64encode(blob).decode("ascii")
+        # Planes arrive as grayscale JPEG (from JPEG CMYK) or PNG (from LZW
+        # CMYK); the ink filters treat either the same.
+        mime = "image/png" if blob[:4] == b"\x89PNG" else "image/jpeg"
         # The first (opaque) plane is the blend base for the rest.
         blend = "" if ink == "c" else ' style="mix-blend-mode:multiply"'
         parts.append(
             f'<image {box} filter="url(#ink-{ink})"{blend} '
-            f'href="data:image/jpeg;base64,{b64}"/>'
+            f'href="data:{mime};base64,{b64}"/>'
         )
     parts.append("</g>")
     return "".join(parts)

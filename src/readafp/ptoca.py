@@ -23,7 +23,13 @@ from readafp.bcoca import barcode_png, parse_barcode
 from readafp.foca import Font, parse_code_page, parse_coded_fonts, parse_fonts
 from readafp.gcgid import bridge_code_page
 from readafp.goca import GocaGraphic, draw_goca
-from readafp.ioca import cmyk_jpeg_bands, image_blob, parse_image_segment
+from readafp.imimage import decode_im_image, parse_ioc_origin
+from readafp.ioca import (
+    cmyk_jpeg_bands,
+    image_blob,
+    lzw_cmyk_bands,
+    parse_image_segment,
+)
 from readafp.parser import StructuredField
 from readafp.triplets import (
     codec_for_codepage_name,
@@ -1094,6 +1100,8 @@ class _ImageObject:
     x: int = 0  # OBP offsets, in the including page's units
     y: int = 0
     bands: Optional[List[bytes]] = None  # CMYK plane JPEGs
+    crisp: bool = False  # render pixelated (bilevel IM image raster)
+    scaled_pos: bool = False  # x/y are in `upi` units (IM image), not page units
 
 
 def _parse_obd(data: bytes) -> Tuple[Optional[int], int, int]:
@@ -1135,7 +1143,7 @@ def _finish_image_object(
     if blob is not None:
         mime, payload = blob
     else:
-        bands = cmyk_jpeg_bands(segment)
+        bands = cmyk_jpeg_bands(segment) or lzw_cmyk_bands(segment)
         if bands is None:
             logger.info(
                 "skipping IOCA image: compression 0x%02X, %d bits/IDE "
@@ -1144,7 +1152,7 @@ def _finish_image_object(
                 segment.bits,
             )
             return None
-        mime, payload = "image/jpeg", b""
+        mime, payload = "image/png", b""
     upi, width, height = _parse_obd(obd) if obd else (None, 0, 0)
     if width <= 0 or height <= 0:
         # No usable object area: fall back to the pixel grid at the
@@ -1197,6 +1205,7 @@ def _parse_iob(
             upi = _u16(tdata, 2) // 10 or None
 
     bands: Optional[List[bytes]] = None
+    crisp = False
     blob = resources.get(name)
     if blob is not None:
         mime = _sniff_image(blob)
@@ -1206,7 +1215,7 @@ def _parse_iob(
         obj = images.get(name)
         if obj is None:
             return None
-        mime, blob, bands = obj.mime, obj.blob, obj.bands
+        mime, blob, bands, crisp = obj.mime, obj.blob, obj.bands, obj.crisp
         if width <= 0 or height <= 0:  # fall back to the object's OBD
             upi, width, height = obj.upi, obj.width, obj.height
     if width <= 0 or height <= 0:
@@ -1219,6 +1228,7 @@ def _parse_iob(
         mime=mime,
         data=blob,
         bands=bands,
+        crisp=crisp,
     )
 
 
@@ -1346,6 +1356,12 @@ def extract_pages(
     image_obd: Optional[bytes] = None
     image_obp: Optional[bytes] = None
     image_name: Optional[str] = None
+    in_im_image = False  # legacy IM image object (BII...EII)
+    im_iid: Optional[bytes] = None
+    im_ioc: Optional[bytes] = None
+    im_cells: List[Tuple[Optional[bytes], bytes]] = []
+    im_icp: Optional[bytes] = None
+    im_name: Optional[str] = None
     in_barcode = False
     barcode_bdd = b""
     barcode_bdas: List[bytes] = []
@@ -1361,7 +1377,12 @@ def extract_pages(
         elif f.sf_id == 0xD3EE92 and container:  # OCD carries its bytes
             resources[container] = resources.get(container, b"") + f.data
         elif f.sf_id in (0xD3A8CE, 0xD3A85F):  # BRS / BPS name a resource
-            resource_name = f.token_name
+            # A page segment or overlay is often wrapped in a named BRS whose
+            # inner BPS/BMO token is blank; keep the outer (non-blank) name so
+            # the content indexes under the name an IPS/IPO will reference.
+            nm = (f.token_name or "").strip()
+            if nm:
+                resource_name = nm
         elif f.sf_id in (0xD3A9CE, 0xD3A95F):  # ERS / EPS
             resource_name = None
         elif f.sf_id == 0xD3A8FB:  # BIM starts an image object capture
@@ -1387,6 +1408,7 @@ def extract_pages(
                             mime=obj.mime,
                             data=obj.blob,
                             bands=obj.bands,
+                            crisp=obj.crisp,
                         )
                     )
                 else:
@@ -1400,6 +1422,53 @@ def extract_pages(
             image_obp = f.data
         elif in_image and f.sf_id == 0xD3EEFB:  # IPD: IOCA segment bytes
             image_ipd += f.data
+        elif f.sf_id == 0xD3A87B:  # BII starts a legacy IM image object
+            in_im_image = True
+            im_iid = None
+            im_ioc = None
+            im_cells = []
+            im_icp = None
+            im_name = f.token_name
+        elif in_im_image and f.sf_id == 0xD3A67B:  # IID: descriptor
+            im_iid = f.data
+        elif in_im_image and f.sf_id == 0xD3A77B:  # IOC: object-area origin
+            im_ioc = f.data
+        elif in_im_image and f.sf_id == 0xD3AC7B:  # ICP: cell position
+            im_icp = f.data
+        elif in_im_image and f.sf_id == 0xD3EE7B:  # IRD: cell raster data
+            im_cells.append((im_icp, f.data))
+            im_icp = None
+        elif f.sf_id == 0xD3A97B and in_im_image:  # EII completes it
+            in_im_image = False
+            im = decode_im_image(im_iid, im_cells) if im_iid else None
+            if im is not None:
+                # The IOC's object-area origin positions an IM image placed
+                # directly on a page (image points, at the IID resolution);
+                # a page-segment-wrapped image leaves it zero and is placed
+                # by its IPS instead.
+                ioc_x, ioc_y = parse_ioc_origin(im_ioc) if im_ioc else (0, 0)
+                res = im.resolution or 1440
+                obj = _ImageObject(
+                    mime="image/png", blob=im.png, upi=res,
+                    width=im.width, height=im.height, x=ioc_x, y=ioc_y,
+                    crisp=True, scaled_pos=True,
+                )
+                if current is not None:  # inline: place on the page now
+                    upi = current.units_per_inch
+                    current.images.append(
+                        ImageRef(
+                            x=_scale(obj.x, res, upi),
+                            y=_scale(obj.y, res, upi),
+                            width=_scale(obj.width, res, upi),
+                            height=_scale(obj.height, res, upi),
+                            mime=obj.mime, data=obj.blob, crisp=obj.crisp,
+                        )
+                    )
+                else:  # a page segment resource: index for a later IPS
+                    for key in (im_name, resource_name):
+                        if key:
+                            image_resources.setdefault(key, obj)
+                    loose_images.append(obj)
         elif f.sf_id == 0xD3A8EB:  # BBC starts a bar code object
             in_barcode = True
             barcode_bdd = b""
@@ -1464,6 +1533,8 @@ def extract_pages(
             mpo_map.update(_parse_mpo(f.data))
         elif f.sf_id == 0xD3AFD8 and current is not None:  # IPO: place overlay
             _include_overlay(current, overlays, mpo_map, f.data)
+        elif f.sf_id == 0xD3AF5F and current is not None:  # IPS: place segment
+            _include_segment(current, image_resources, f.data)
         elif f.sf_id == 0xD3A8DF:  # BMO: capture an overlay like a page
             current = Page()
             if pgd_default:
@@ -1475,8 +1546,14 @@ def extract_pages(
         elif f.sf_id == 0xD3A9DF:  # EMO: store the captured overlay by name
             if current is not None and in_overlay:
                 _estimate_font_sizes(current, fonts)
-                if overlay_name:
-                    overlays[overlay_name] = current
+                # Key by every name an IPO might cite: the inner BMO token
+                # and the enclosing BRS/BPS resource name. Some producers
+                # leave the BMO name blank and identify the overlay only by
+                # its resource wrapper (e.g. O1CIMNL1) — which is exactly what
+                # the page's IPO references.
+                for key in (overlay_name, (resource_name or "").strip()):
+                    if key:
+                        overlays[key] = current
             current, state, in_overlay, overlay_name = None, None, False, None
         elif f.sf_id == 0xD3A8AF:  # BPG
             current = Page()
@@ -1650,7 +1727,11 @@ def extract_pages(
         # geometry and content; present each as its own page, the way AFP
         # viewers open a bare overlay. An overlay merely defined-but-unused
         # inside a real document (which has a BDT) is left alone.
+        seen: set = set()  # an overlay is keyed under >1 name (BMO + resource)
         for overlay in overlays.values():
+            if id(overlay) in seen:
+                continue
+            seen.add(id(overlay))
             if overlay.texts or overlay.rules or overlay.images or overlay.graphics:
                 pages.append(overlay)
     if not pages and loose_images:
@@ -1782,6 +1863,41 @@ def _include_overlay(
                 width=sz(g.width), height=sz(g.height),
             )
         )
+
+
+def _include_segment(
+    page: Page, images: Dict[str, "_ImageObject"], ips: bytes
+) -> None:
+    """Composite a page segment's image onto a page (IPS field).
+
+    IPS layout: segment name (8 EBCDIC bytes) then signed 3-byte X and Y
+    offsets in the page's L-units. The named page segment's image (indexed
+    by its resource name) is placed at that offset plus the image's own
+    object-area position. Page segments in the corpus wrap a single IOCA
+    image (a scanned form / logo); only that image is composited.
+    """
+    try:
+        name = ips[:8].decode("cp500").strip()
+    except UnicodeDecodeError:
+        return
+    obj = images.get(name)
+    if obj is None:
+        return
+    ox = int.from_bytes(ips[8:11], "big", signed=True) if len(ips) >= 11 else 0
+    oy = int.from_bytes(ips[11:14], "big", signed=True) if len(ips) >= 14 else 0
+    upi = page.units_per_inch
+    # IOCA object positions (from OBP) are already in page units; an IM
+    # image's IOC origin is in its own (image-point) units and must be scaled.
+    px = _scale(obj.x, obj.upi, upi) if obj.scaled_pos else obj.x
+    py = _scale(obj.y, obj.upi, upi) if obj.scaled_pos else obj.y
+    page.images.append(
+        ImageRef(
+            x=ox + px, y=oy + py,
+            width=_scale(obj.width, obj.upi, upi),
+            height=_scale(obj.height, obj.upi, upi),
+            mime=obj.mime, data=obj.blob, bands=obj.bands, crisp=obj.crisp,
+        )
+    )
 
 
 def _font_specimen_pages(fonts: List[Font]) -> List[Page]:

@@ -21,7 +21,9 @@ src/readafp/
   ptoca.py     # PTOCA decoder + page extraction → List[Page]
   render.py    # Page → SVG string
   triplets.py  # MO:DCA triplet decoding + describe_field()
-  ioca.py      # IOCA image segment decoder → IocaImage / PNG / JPEG
+  ioca.py      # IOCA image segment decoder → IocaImage / PNG / JPEG (+ LZW, CMYK)
+  ccitt.py     # CCITT T.6 (Group 4 / IBM MMR) bilevel image decompression
+  imimage.py   # legacy IM Image Object (IM/1) decoder → bilevel PNG
   bcoca.py     # BCOCA bar code decoder → BarCode + QR PNG via segno
   goca.py      # GOCA drawing-order decoder → GocaGraphic / SVG fragment
   foca.py      # FOCA raster-font decoder → Font / Glyph bitmaps (PNG)
@@ -42,7 +44,7 @@ desktop.py   # standalone-.exe entry point (waitress + opens browser, local-only
 
 tests/
   test_parser.py, test_ptoca.py, test_triplets.py,
-  test_ioca.py, test_bcoca.py, test_app.py, test_foca.py, test_goca.py,
+  test_ioca.py, test_ccitt.py, test_imimage.py, test_bcoca.py, test_app.py, test_foca.py, test_goca.py,
   test_cff.py, test_gcgid.py,
   test_fop_pairs.py   # PDF-as-oracle: per-pair AFP-vs-PDF geometry check
 
@@ -96,7 +98,9 @@ advance; producers vary it per line to justify text).
 
 **TRN decoding** — if high byte of first two bytes is `0x00`, treat as UTF-16BE (TrueType). Otherwise decode as EBCDIC using the codepage for the active font (from MCF), falling back to the user-selected codepage. **ASCII/Latin-1 autodetect:** when the font declares *no* code page (the MCF names only a coded font, so `codepage` is a pure fallback), `_looks_like_ascii()` decides per-run whether the bytes are ISO-8859-1 rather than EBCDIC and decodes them as `latin-1`. Some producers ship coded fonts with an unembedded single-byte ASCII code page. The decisive signal is the **0x80-0x9F** byte range: ISO-8859-1 C1 controls that real text never uses, but EBCDIC lowercase letters a-r — so any byte there vetoes the ASCII verdict, keeping EBCDIC text (even a mostly-ASCII-padded run like the `large_ibm273` fixture) as EBCDIC while Latin-1 accents (all ≥ 0xA0) pass. It is per-run, so a file mixing both resolves each run on its own evidence, and never overrides a code page the file/user actually declared. Also enabled for the inspector Find search.
 
-**IOCA images** — BIM…EIM bracket; IPD fields carry concatenated self-defining fields (SDFs). Key SDFs: 0x94 Image Size, 0x95 Image Encoding, 0x96 IDE Size, 0xFE92 Image Data, 0xFE9C Band Image Data (CMYK planes). Compressions: 0x03 = uncompressed, 0x83 = JPEG. Bilevel inverted (IOCA 1 = mark/dark).
+**IOCA images** — BIM…EIM bracket; IPD fields carry concatenated self-defining fields (SDFs). Key SDFs: 0x94 Image Size, 0x95 Image Encoding, 0x96 IDE Size, 0xB6 Tile Size (tiled FS45 images, when 0x94 is absent), 0xFE92 Image Data, 0xFE9C Band Image Data (CMYK planes). Compressions: **0x01 = IBM MMR** (CCITT T.6 Group-4 bilevel, decoded in `ccitt.py`), 0x03 = uncompressed, **0x0D = TIFF LZW** (`ioca._decode_lzw`), 0x83 = JPEG. Bilevel inverted (IOCA 1 = mark/dark). **CCITT G4 (`ccitt.decode_g4`):** these streams are pure 2D (T.6) with a **leading G3-style EOL** (`000000000001`) to skip — despite the "IBM MMR" name, the real images are not the 1D-first-line variant, so every line decodes against the line above (`_decode_2d_line`: pass/vertical/horizontal modes + the T.4 white/black run tables). Returns a 1-bpp raster (1=black) padded to full height. **TIFF LZW** here carries 4-band **CMYK** tiled color (32-bit IDE, one LZW stream per band); `ioca.lzw_cmyk_bands` decompresses each band to a grayscale PNG plane and the renderer composites them with the same ink filters as JPEG CMYK (`render._image_markup` detects PNG vs JPEG bands). A `_MAX_LZW_PIXELS` guard skips pathologically large tiles. Round-trip tests in `tests/test_ccitt.py` (test-only encoders) validate both decoders.
+
+**IM Image Object (IM/1)** — the legacy bilevel raster, category X'7B', kept for migration and still emitted by some producers for logos and **bar codes** — the `div.afp` fixture (a bpost payment form) stores a "COD" logo plus several 1D bar codes this way, positioned inside the postal-label box. Bracket **BII…EII**; **IID** (X'D3A67B') gives resolution (XUnits/10 dpi) and image size (XSize@18-19, YSize@20-21 image points), plus default cell extents (XCSizeD@28-29, YCSizeD@30-31); the image is either *simple* (one **IRD** raster covering the grid) or *celled* — a grid of (**ICP**, **IRD**) pairs where each ICP positions a cell (XCOset/YCOset, XCSize/YCSize with X'FFFF' → the IID default) and can replicate it across a fill rectangle (XFilSize/YFilSize). `imimage.decode_im_image(iid, cells)` reassembles every cell into one XSize×YSize 1-bpp bitmap — pel bit 1 = toned/black, inverted to PNG's 0 = black like IOCA — and packs a PNG via `ioca.pack_png`. **Positioning:** an IM image placed *directly on a page* takes its object-area origin from the **IOC** (X'D3A77B', `parse_ioc_origin`: XoaOset@0-2, YoaOset@3-5) in **image points** (the IID resolution's units, scaled to page L-units via `_ImageObject.scaled_pos`), while one wrapped in a `BPS...EPS` page segment leaves the IOC zero and is placed by its **IPS** offset instead (both occur in `div.afp`; without the IOC every inline image stranded at 0,0 — top-left). `ptoca.extract_pages` captures BII…EII like a BIM image and yields an `_ImageObject` (upi = resolution, `crisp=True` so the raster renders pixelated); in `div.afp` the object is wrapped in a `BPS…EPS` page segment and composited by its `IPS`. Byte offsets confirmed against the MO:DCA reference; synthetic + `div.afp` tests in `tests/test_imimage.py`.
 
 **CMYK composite** — four grayscale JPEG planes (one per ink). Renderer applies `feColorMatrix` filters to invert each plane to its complement color, then `mix-blend-mode: multiply` to optically compose: R=(1-C)(1-K), G=(1-M)(1-K), B=(1-Y)(1-K).
 
@@ -191,7 +195,7 @@ Render only what the AFP contains. No invented features (no auto-linkified URLs,
 
 Type codes: `0xA8`=Begin, `0xA9`=End, `0xA6`=Descriptor, `0xAB`=Map, `0xAC`=Position, `0xAF`=Include, `0xEE`=Data, `0xB1`=Migration.
 
-Category codes: `0xA8`=Document, `0xAF`=Page, `0x9B`=Presentation Text, `0xFB`=Image, `0xBB`=Graphics, `0xEB`=Bar Code, `0x92`=Object Container, `0xC6`/`0xCE`=Resource.
+Category codes: `0xA8`=Document, `0xAF`=Page, `0x9B`=Presentation Text, `0xFB`=Image, `0x7B`=IM Image (legacy IM/1), `0xBB`=Graphics, `0xEB`=Bar Code, `0x92`=Object Container, `0xC6`/`0xCE`=Resource.
 
 ## Corpus Notes
 
@@ -237,14 +241,26 @@ readable name via the Font Name Map (FNN). Specimen text sets
 `render._fit()`. Decoded advance widths match the FNI increments exactly,
 the independent oracle for interpreter correctness.
 
-## Page Overlays (BMO/EMO + IPO)
+## Page Overlays (BMO/EMO + IPO) and Page Segments (BPS + IPS)
 
 `extract_pages` captures a `BMO…EMO` overlay like a page, keyed by its
 EBCDIC name. A page's `IPO` (Include Page Overlay) field then composites
 that overlay's text/rules/images/graphics onto the page via
 `_include_overlay()`, shifted by the IPO X/Y offset (name = 8 EBCDIC
 bytes + 3+3 signed offset) and scaled if the overlay declared a
-different resolution. IPO normally references the overlay by its 8-byte
+different resolution.
+
+**IPS (Include Page Segment, `0xD3AF5F`)** works the same way for page
+segments: a `BPS…EPS` segment (usually a single IOCA image — a scanned
+form or logo) is placed by `_include_segment()` at the IPS name + X/Y
+offset (plus the image's own OBP). **Resource-name indexing:** an overlay
+or page segment is often wrapped in a *named* `BRS…ERS` whose inner
+`BMO`/`BPS` token is **blank**; the IPS/IPO references the BRS name. So
+the BMO/EMO handler keys the overlay by both its BMO token and the
+enclosing resource name, and the BRS/BPS handler does not let a blank
+inner name clobber `resource_name` (image resources then index under the
+BRS name the IPS cites). Without this, self-contained docs (cert forms,
+postal-label graphics) rendered blank pages. IPO normally references the overlay by its 8-byte
 name; `_parse_mpo` decodes the **MPO** (Map Page Overlay) field into a
 `{local id: name}` map (per repeating group: X'24' Resource Local Id +
 X'02' FQN name), and `_resolve_overlay` falls back to it when the IPO field

@@ -571,6 +571,18 @@ def _field_data_summary(
         w = int.from_bytes(d[5:7], "big")
         h = int.from_bytes(d[7:9], "big")
         return f"image {w}×{h} pels · {dx}×{dy} DPI"
+    if field.sf_id == 0xD3A67B and len(field.data) >= 32:  # IID (IM image)
+        d = field.data
+        dpi = int.from_bytes(d[14:16], "big") // 10
+        w = int.from_bytes(d[18:20], "big")
+        h = int.from_bytes(d[20:22], "big")
+        return f"IM image {w}×{h} pels · {dpi} DPI"
+    if field.sf_id == 0xD3AC7B and len(field.data) >= 8:  # ICP (IM image cell)
+        d = field.data
+        b = lambda a: int.from_bytes(d[a:a + 2], "big")
+        return (f"cell @{b(0)},{b(2)} size {b(4)}×{b(6)}")
+    if field.sf_id == 0xD3EE7B:  # IRD (IM image raster data)
+        return f"IM raster data ({len(field.data)} bytes)"
     if field.sf_id in (MCF_FORMAT_1, MCF_FORMAT_2):  # Map Coded Font
         res = mcf_font_resources(field.data, format1=field.sf_id == MCF_FORMAT_1)
         if res:

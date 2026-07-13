@@ -26,11 +26,67 @@ import zlib
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional, Tuple
 
+from readafp.ccitt import decode_g4
+
 logger = logging.getLogger(__name__)
 
 # Image Encoding (0x95) compression algorithm identifiers.
+COMPRESSION_MMR = 0x01   # IBM MMR / CCITT T.6 Group 4 (bilevel)
 COMPRESSION_NONE = 0x03
+COMPRESSION_LZW = 0x0D   # TIFF LZW
 COMPRESSION_JPEG = 0x83
+
+
+def _decode_lzw(data: bytes) -> bytes:
+    """Decompress a TIFF-variant LZW stream to raw bytes.
+
+    Variable-width MSB-first codes starting at 9 bits, with a clear code
+    (256), end-of-information (257), and the TIFF "early change" quirk: the
+    code width grows one code before the table would overflow it.
+    """
+    CLEAR, EOI = 256, 257
+
+    def fresh() -> Tuple[List[bytes], int, int]:
+        return [bytes([i]) for i in range(256)] + [b"", b""], 258, 9
+
+    table, nxt, width = fresh()
+    out = bytearray()
+    prev = -1
+    acc = 0       # MSB-first bit accumulator
+    nbits = 0
+    pos = 0
+    n = len(data)
+    while True:
+        while nbits < width and pos < n:
+            acc = (acc << 8) | data[pos]
+            pos += 1
+            nbits += 8
+        if nbits < width:
+            break
+        nbits -= width
+        code = (acc >> nbits) & ((1 << width) - 1)
+        if code == EOI:
+            break
+        if code == CLEAR:
+            table, nxt, width = fresh()
+            prev = -1
+            continue
+        if prev == -1:
+            entry = table[code]
+        else:
+            if code < nxt and table[code]:
+                entry = table[code]
+            elif code == nxt:
+                entry = table[prev] + table[prev][:1]
+            else:  # corrupt stream
+                break
+            table.append(table[prev] + entry[:1])
+            nxt += 1
+            if nxt == (1 << width) - 1 and width < 12:
+                width += 1  # TIFF early change: grow one code early
+        out += entry
+        prev = code
+    return bytes(out)
 
 
 def iter_sdfs(data: bytes) -> Iterator[Tuple[int, bytes]]:
@@ -90,6 +146,12 @@ def parse_image_segment(data: bytes) -> Optional[IocaImage]:
             img.vres = int.from_bytes(params[3:5], "big")
             img.width = int.from_bytes(params[5:7], "big")
             img.height = int.from_bytes(params[7:9], "big")
+        elif code == 0xB6 and len(params) >= 8:  # Tile Size (tiled images)
+            seen = True
+            if img.width <= 0:
+                img.width = int.from_bytes(params[0:4], "big")
+            if img.height <= 0:
+                img.height = int.from_bytes(params[4:8], "big")
         elif code == 0x95 and len(params) >= 1:  # Image Encoding
             seen = True
             img.compression = params[0]
@@ -152,29 +214,40 @@ def image_blob(img: IocaImage) -> Optional[Tuple[str, bytes]]:
         if start >= 0:
             return "image/jpeg", img.data[start:]
         return None
-    if img.compression != COMPRESSION_NONE:
+    if img.width <= 0 or img.height <= 0:
         return None
-    if not img.data or img.width <= 0 or img.height <= 0:
+    # Decompress to a raw raster (rows of IDEs, MSB-first for bilevel), then
+    # share the uncompressed packing path below. G4/MMR is inherently
+    # bilevel; LZW carries whatever IDE size the encoding declares.
+    if img.compression == COMPRESSION_MMR:
+        raw = decode_g4(img.data, img.width, img.height)
+    elif img.compression == COMPRESSION_LZW:
+        raw = _decode_lzw(img.data)
+    elif img.compression == COMPRESSION_NONE:
+        raw = img.data
+    else:
+        return None
+    if not raw:
         return None
     if img.bits == 1:
         row_bytes = (img.width + 7) // 8
-        if len(img.data) < row_bytes * img.height:
+        if len(raw) < row_bytes * img.height:
             return None
         # IOCA bilevel: 1 = mark (black). PNG grayscale: 0 = black.
-        inverted = bytes(b ^ 0xFF for b in img.data)
+        inverted = bytes(b ^ 0xFF for b in raw)
         return "image/png", pack_png(img.width, img.height, 1, 0, row_bytes,
                                  inverted)
     if img.bits == 8:
-        if len(img.data) < img.width * img.height:
+        if len(raw) < img.width * img.height:
             return None
         return "image/png", pack_png(img.width, img.height, 8, 0, img.width,
-                                 img.data)
+                                 raw)
     if img.bits == 24:
         row_bytes = img.width * 3
-        if len(img.data) < row_bytes * img.height:
+        if len(raw) < row_bytes * img.height:
             return None
         return "image/png", pack_png(img.width, img.height, 8, 2, row_bytes,
-                                 img.data)
+                                 raw)
     return None
 
 
@@ -191,3 +264,36 @@ def cmyk_jpeg_bands(img: IocaImage) -> Optional[List[bytes]]:
     if not all(b.startswith(b"\xff\xd8") for b in bands):
         return None
     return bands
+
+
+# Guard against a pathological tile blowing up memory/time in pure Python.
+_MAX_LZW_PIXELS = 12_000_000  # ~A3 at 300 dpi
+
+
+def lzw_cmyk_bands(img: IocaImage) -> Optional[List[bytes]]:
+    """Return [C, M, Y, K] plane PNGs from a 4-band LZW image.
+
+    FS45 band-interleaved CMYK can also arrive LZW-compressed: each band is
+    its own LZW stream of 8-bit ink values (0 = no ink). Decompress each and
+    repack as a grayscale PNG so the renderer composites the planes with the
+    same ink filters it uses for JPEG CMYK, without a per-pixel Python
+    conversion. Returns None for anything but a decodable 4-band image.
+    """
+    if img.compression != COMPRESSION_LZW or set(img.bands) != {1, 2, 3, 4}:
+        return None
+    if img.width <= 0 or img.height <= 0:
+        return None
+    if img.width * img.height > _MAX_LZW_PIXELS:
+        logger.info("skipping LZW CMYK image: %dx%d exceeds pixel guard",
+                    img.width, img.height)
+        return None
+    need = img.width * img.height
+    planes: List[bytes] = []
+    for n in (1, 2, 3, 4):
+        raw = _decode_lzw(img.bands[n])
+        if len(raw) < need:
+            return None
+        planes.append(
+            pack_png(img.width, img.height, 8, 0, img.width, raw[:need])
+        )
+    return planes

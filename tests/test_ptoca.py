@@ -459,6 +459,52 @@ def _sf(sf_id: int, data: bytes = b"") -> bytes:
     return b"\x5a" + (len(body) + 2).to_bytes(2, "big") + body
 
 
+def _name8(text: str) -> bytes:
+    return text.encode("cp500")[:8].ljust(8, b"\x40")
+
+
+def test_ips_includes_page_segment_by_resource_name() -> None:
+    # A page segment wraps an 8x8 uncompressed IOCA image in a BRS named
+    # S1SEG001 whose inner BPS name is blank. A page's IPS references the
+    # resource name plus an offset; the image must composite at that offset.
+    import struct
+    ipd = (
+        bytes([0x94, 9, 0]) + struct.pack(">HHHH", 3000, 3000, 8, 8)  # size
+        + bytes([0x95, 1, 0x03])                       # compression = none
+        + bytes([0x96, 1, 1])                          # 1 bit / IDE
+        + bytes([0xFE, 0x92, 0, 8]) + b"\xff" * 8      # 8x8 all-black bilevel
+    )
+    obp = bytes([0x00, 0x08]) + (0).to_bytes(3, "big") + (0).to_bytes(3, "big")
+    seg = (
+        _sf(0xD3A8CE, _name8("S1SEG001"))              # BRS (named resource)
+        + _sf(0xD3A85F, b"\x40" * 8)                   # BPS (blank name)
+        + _sf(0xD3A8FB, b"\x40" * 8)                   # BIM
+        + _sf(0xD3AC6B, obp)                           # OBP position (0,0)
+        + _sf(0xD3EEFB, ipd)                           # IPD (IOCA segment)
+        + _sf(0xD3A9FB, b"\x40" * 8)                   # EIM
+        + _sf(0xD3A95F, b"\x40" * 8)                   # EPS
+        + _sf(0xD3A9CE, _name8("S1SEG001"))            # ERS
+    )
+    ips = _name8("S1SEG001") + (100).to_bytes(3, "big") + (200).to_bytes(3, "big")
+    pgd = bytes([0, 0]) + struct.pack(">HH", 14400, 14400) \
+        + (8500).to_bytes(3, "big") + (11000).to_bytes(3, "big")
+    doc = (
+        _sf(0xD3A8A8, b"\x40" * 8)                     # BDT
+        + _sf(0xD3A8C6, b"\x40" * 8) + seg + _sf(0xD3A9C6, b"\x40" * 8)  # BRG
+        + _sf(0xD3A8AF, b"\x40" * 8)                   # BPG
+        + _sf(0xD3A8C9, b"\x40" * 8) + _sf(0xD3A6AF, pgd)
+        + _sf(0xD3A9C9, b"\x40" * 8)                   # EAG
+        + _sf(0xD3AF5F, ips)                           # IPS
+        + _sf(0xD3A9AF, b"\x40" * 8)                   # EPG
+        + _sf(0xD3A9A8, b"\x40" * 8)                   # EDT
+    )
+    page = extract_pages(list(iter_fields(doc)))[0]
+    assert len(page.images) == 1
+    im = page.images[0]
+    assert (round(im.x), round(im.y)) == (100, 200)  # IPS offset + OBP (0,0)
+    assert im.mime == "image/png" and im.data
+
+
 def test_extract_pages_multipage_document() -> None:
     def page(text: str) -> bytes:
         ptx = bytes.fromhex("2bd3" "04c70064" "04d300c8") + bytes(
