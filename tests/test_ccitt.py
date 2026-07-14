@@ -44,16 +44,31 @@ def _run_bits(run, white):
 _MODE_BITS = {v: k for k, v in _MODES.items()}
 
 
-def _encode_g4(rows, width):
-    """Encode a bilevel raster (list of rows of 0/1) as a T.6 stream.
+def _encode_1d(row, width):
+    """Encode one row as 1D Modified Huffman runs (starting white)."""
+    bits = ""
+    pos = 0
+    color = 0
+    for x in _changing_elements(row):
+        bits += _run_bits(x - pos, white=(color == 0))
+        pos = x
+        color ^= 1
+    bits += _run_bits(width - pos, white=(color == 0))  # final run to width
+    return bits
 
-    Mirrors the standard 2D mode-selection so it exercises pass, vertical
-    and horizontal modes in the decoder. Prefixed with an EOL like the
-    real AFP images.
+
+def _encode_g4(rows, width):
+    """Encode a bilevel raster (list of rows of 0/1) as an IBM MMR stream.
+
+    Mirrors real AFP MMR (IOCA X'01') framing: a leading EOL + 1D tag, the
+    first line 1D, a switch EOL + 2D tag, then the remaining lines 2D. This
+    exercises the decoder's 1D and 2D paths and its EOL+tag handling.
     """
-    bits = "000000000001"  # leading EOL
-    ref = [width, width]
-    for row in rows:
+    bits = "000000000001" + "1"  # leading EOL + 1D tag
+    bits += _encode_1d(rows[0], width)
+    bits += "000000000001" + "0"  # 1D->2D switch EOL + 2D tag
+    ref = _changing_elements(rows[0]) + [width, width]
+    for row in rows[1:]:
         cur = _changing_elements(row) + [width, width]
         a0 = -1
         color = 0
@@ -150,6 +165,22 @@ def test_g4_round_trips_a_patterned_image():
         rows.append(row)
     stream = _encode_g4(rows, width)
     raw = decode_g4(stream, width, height)
+    assert _raster_to_rows(raw, width, height) == rows
+
+
+def test_g4_first_line_has_content():
+    # IBM MMR codes the first scan line 1D. A first row with real content
+    # (not trivially white) desynced the old all-2D decoder, painting black
+    # bands across the top of full-page scans until it re-aligned lower down.
+    width, height = 40, 20
+    rows = []
+    for y in range(height):
+        row = [0] * width
+        # dense marks on the very first row, sparser below
+        for x in range(0, width, 2 if y == 0 else 7):
+            row[x] = 1
+        rows.append(row)
+    raw = decode_g4(_encode_g4(rows, width), width, height)
     assert _raster_to_rows(raw, width, height) == rows
 
 

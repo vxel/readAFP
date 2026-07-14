@@ -146,13 +146,14 @@ def _read_mode(bits: _Bits) -> Optional[Tuple[str, int]]:
 _EOL_MIN_ZEROS = 7
 
 
-def _maybe_skip_eol(bits: _Bits) -> None:
+def _maybe_skip_eol(bits: _Bits) -> bool:
     """Consume an inter-line EOL / fill (>= _EOL_MIN_ZEROS zeros then a 1).
 
-    T.6 lines are coded back-to-back, but these streams separate some lines
-    with an EOL — the classic 11-zero G3 EOL or a shorter byte-fill marker.
-    A real mode/extension code begins with at most 6 zeros, so a longer zero
-    run at a line boundary unambiguously marks an EOL; shorter is left alone.
+    T.6 lines are coded back-to-back, but IBM MMR separates the 1D first
+    line from the 2D remainder with an EOL — the classic 11-zero G3 EOL or a
+    shorter byte-fill marker. A real 2D mode/extension code begins with at
+    most 6 zeros, so a longer zero run at a line boundary unambiguously marks
+    an EOL; shorter is left alone. Returns True if an EOL was consumed.
     """
     save = bits.pos
     zeros = 0
@@ -160,15 +161,37 @@ def _maybe_skip_eol(bits: _Bits) -> None:
         b = bits.bit()
         if b is None:
             bits.pos = save
-            return
+            return False
         if b == 0:
             zeros += 1
             continue
         # hit a 1
         if zeros >= _EOL_MIN_ZEROS:
-            return  # consumed the whole EOL (zeros + terminating 1)
+            return True  # consumed the whole EOL (zeros + terminating 1)
         bits.pos = save
-        return
+        return False
+
+
+def _decode_1d_line(bits: _Bits, width: int) -> List[int]:
+    """Decode one 1D (Modified Huffman) scan line to changing elements.
+
+    IBM MMR (IOCA compression X'01') codes the *first* scan line 1D:
+    alternating white/black runs, starting white, each a sum of make-up
+    codes plus a terminating code, laid down until the line is filled.
+    """
+    cur: List[int] = []
+    a0 = 0
+    color = 0  # 0 = white, 1 = black
+    while a0 < width:
+        table = _BLACK_T if color else _WHITE_T
+        longest = _BLACK_MAX if color else _WHITE_MAX
+        run = _read_run(bits, table, longest)
+        if run is None:
+            break
+        a0 = min(a0 + run, width)
+        cur.append(a0)
+        color ^= 1
+    return cur
 
 
 def _read_run(bits: _Bits, table: Dict[Tuple[int, int], int],
@@ -239,11 +262,19 @@ def _decode_2d_line(bits: _Bits, ref: List[int], width: int) -> List[int]:
 
 
 def decode_g4(data: bytes, width: int, height: int) -> bytes:
-    """Decode a T.6 (Group 4) stream to a 1-bpp raster, 1 = black.
+    """Decode an IBM MMR (IOCA X'01') stream to a 1-bpp raster, 1 = black.
 
     Returns ``(width + 7) // 8 * height`` bytes (rows padded to a byte),
     MSB first. Decoding stops early and pads with white on malformed data
     rather than raising, so a truncated stream still yields a partial image.
+
+    IBM MMR is IBM's variant of ITU-T T.6: the *first* scan line is coded
+    1D (Modified Huffman) and the rest 2D, with a single EOL marking the
+    1D->2D switch (plus a leading EOL these producers prepend, and an EOP at
+    the end). Each EOL carries a 1-bit 1D/2D tag for the line that follows.
+    Decoding every line as 2D — as pure T.6 would — mis-reads the tag bit
+    and 1D first line, desyncing until the switch EOL happens to re-align it
+    (the "black bands across the top" failure on full-page scans).
     """
     if width <= 0 or height <= 0:
         return b""
@@ -255,13 +286,18 @@ def decode_g4(data: bytes, width: int, height: int) -> bytes:
     ref: List[int] = [width, width]
 
     for _ in range(height):
-        # A leading EOL frames the data (and an EOL/EOFB ends the page); skip
-        # it wherever it appears at a line boundary. A 2D mode never begins
-        # with that many zeros, so this is unambiguous.
-        _maybe_skip_eol(bits)
+        # An EOL frames the data (leading EOL, the 1D->2D switch, the EOP).
+        # Each is followed by a 1-bit 1D/2D tag: the leading EOL's tag is 1
+        # (first line 1D), the switch EOL's is 0 (2D thereafter). A correctly
+        # aligned 2D line never starts with that many zeros, so this only
+        # fires on real EOLs.
+        one_d = False
+        if _maybe_skip_eol(bits):
+            one_d = bits.bit() == 1
         if bits.pos >= bits.end:
             break
-        cur = _decode_2d_line(bits, ref, width)
+        cur = (_decode_1d_line(bits, width) if one_d
+               else _decode_2d_line(bits, ref, width))
         # Rasterize this row from its changing elements: runs alternate
         # starting white, flipping color at each transition.
         rowbuf = bytearray(row_bytes)

@@ -1,24 +1,18 @@
 """Tests for the legacy IM Image Object (IM/1) decoder.
 
 Synthetic descriptors exercise polarity, celled placement, fill replication
-and the X'FFFF' default-extent rule; the real ``div.afp`` fixture (which
-carries a "COD" logo plus several 2D bar codes stored as IM images) checks
-the whole capture → decode → page-placement path end to end.
+and the X'FFFF' default-extent rule; synthetic single-page AFP documents
+check the whole capture → decode → page-placement path end to end, both for
+an IM image placed inline (positioned by its IOC origin) and one wrapped in a
+page segment (positioned by an IPS offset). No confidential fixture is used.
 """
 
 import struct
 import zlib
-from pathlib import Path
 
 from readafp.imimage import decode_im_image, parse_ioc_origin
 from readafp.parser import iter_fields
 from readafp.ptoca import extract_pages
-
-
-def _fields(path):
-    return list(iter_fields(path.read_bytes()))
-
-TESTDATA = Path(__file__).parent.parent / "testdata"
 
 
 # --- helpers ----------------------------------------------------------------
@@ -138,81 +132,89 @@ def test_parse_ioc_origin():
     assert parse_ioc_origin(b"") == (0, 0)  # too short, no crash
 
 
-# --- real fixture -----------------------------------------------------------
+# --- synthetic end-to-end (capture → decode → placement) --------------------
 
-def _im_blocks(fields):
-    """Yield (name, iid, cells) for every BII...EII object in a file."""
-    inb = False
-    for f in fields:
-        if f.sf_id == 0xD3A87B:
-            inb, iid, cells, icp, name = True, None, [], None, f.token_name
-        elif inb and f.sf_id == 0xD3A67B:
-            iid = f.data
-        elif inb and f.sf_id == 0xD3AC7B:
-            icp = f.data
-        elif inb and f.sf_id == 0xD3EE7B:
-            cells.append((icp, f.data))
-            icp = None
-        elif inb and f.sf_id == 0xD3A97B:
-            inb = False
-            yield name, iid, cells
+def _sf(sf_id: int, data: bytes = b"") -> bytes:
+    """Build one structured-field record."""
+    body = sf_id.to_bytes(3, "big") + b"\x00\x00\x00" + data
+    return b"\x5a" + (len(body) + 2).to_bytes(2, "big") + body
 
 
-def test_div_fixture_decodes_all_im_images():
-    fields = _fields(TESTDATA / "div.afp")
-    blocks = list(_im_blocks(fields))
-    assert len(blocks) == 10
-    logo = None
-    for name, iid, cells in blocks:
-        im = decode_im_image(iid, cells)
-        assert im is not None and im.resolution == 300
-        assert im.png[:8] == b"\x89PNG\r\n\x1a\n"
-        if name == "S1CODXXX":
-            logo = im
-    # The "COD" logo is a 240×128 bilevel raster with real black content.
-    assert logo is not None
-    w, h, rows = _png_pixels(logo.png)
-    assert (w, h) == (240, 128)
-    black = sum(px == 0 for row in rows for px in row)
-    assert 200 < black < w * h  # some ink, but mostly white background
+def _name8(text: str) -> bytes:
+    return text.encode("cp500")[:8].ljust(8, b"\x40")
 
 
-def _im_placements(pages):
-    """Placed IM-image ImageRefs (crisp PNGs of a known IM size)."""
-    sizes = {(240, 128), (120, 120), (136, 132)}
-    return [
-        im
-        for pg in pages
-        for im in pg.images
-        if im.mime == "image/png"
-        and im.crisp
-        and struct.unpack(">II", im.data[16:24]) in sizes
-    ]
+def _pgd(upi: int = 1440, w: int = 8500, h: int = 11000) -> bytes:
+    # PGD: flags(2) + XpgUnits/YpgUnits per 10 inch + Xpg/Ypg extents.
+    return (bytes([0, 0]) + struct.pack(">HH", upi * 10, upi * 10)
+            + w.to_bytes(3, "big") + h.to_bytes(3, "big"))
 
 
-def test_div_fixture_places_im_image_on_page():
-    """The IM logo, wrapped in a page segment, is composited via IPS."""
-    pages = extract_pages(_fields(TESTDATA / "div.afp"))
-    # A 240×128 PNG uniquely identifies the COD logo (bar codes are smaller).
-    logos = [
-        im for im in _im_placements(pages)
-        if struct.unpack(">II", im.data[16:24]) == (240, 128)
-    ]
-    assert logos, "IM image page segment was never placed on a page"
-    # Positioned by its IPS offset (6236, 1758), not stranded at the origin.
-    assert all((im.x, im.y) == (6236, 1758) for im in logos)
+def _ioc(xo: int, yo: int) -> bytes:
+    # IOC object-area origin: XoaOset(3) YoaOset(3) then constant/mapping bytes.
+    return xo.to_bytes(3, "big") + yo.to_bytes(3, "big") + b"\x00" * 18
 
 
-def test_div_fixture_im_images_are_positioned_not_all_top_left():
-    """Inline IM bar codes take their IOC origin, so they are spread out."""
-    pages = extract_pages(_fields(TESTDATA / "div.afp"))
-    placed = _im_placements(pages)
-    assert len(placed) >= 10
-    # The regression: every IM image landed at (0, 0). Now each carries a
-    # real page position and they occupy several distinct spots.
-    at_origin = [im for im in placed if (im.x, im.y) == (0, 0)]
-    assert not at_origin, "IM images collapsed to the top-left corner"
-    distinct = {(im.x, im.y) for im in placed}
-    assert len(distinct) >= 3
-    # All within the A4 page bounds (11906 × 16838 L-units).
-    assert all(0 < im.x < 11906 and 0 < im.y < 16838 for im in placed)
+def _im_object(iid: bytes, raster: bytes, ioc: bytes = b"",
+               name: str = "") -> bytes:
+    """A BII...EII IM/1 object: IID, optional IOC, one simple IRD raster."""
+    body = _sf(0xD3A87B, _name8(name)) + _sf(0xD3A67B, iid)
+    if ioc:
+        body += _sf(0xD3A77B, ioc)
+    body += _sf(0xD3EE7B, raster) + _sf(0xD3A97B, _name8(name))
+    return body
+
+
+# A 16×8 all-toned raster (→ all-black PNG) at 300 dpi.
+_IID_16x8 = _iid(16, 8, dpi=300)
+_RASTER_16x8 = bytes([0xFF] * 2 * 8)  # row_bytes=2, 8 rows
+
+
+def test_inline_im_image_positioned_by_ioc():
+    """An IM image placed directly on a page takes its IOC object-area origin
+    (image points), scaled to page units — not stranded at the top-left."""
+    doc = (
+        _sf(0xD3A8A8, b"\x40" * 8)                       # BDT
+        + _sf(0xD3A8AF, b"\x40" * 8)                     # BPG
+        + _sf(0xD3A8C9, b"\x40" * 8) + _sf(0xD3A6AF, _pgd(upi=1440))
+        + _sf(0xD3A9C9, b"\x40" * 8)                     # EAG
+        + _im_object(_IID_16x8, _RASTER_16x8, ioc=_ioc(100, 200))
+        + _sf(0xD3A9AF, b"\x40" * 8)                     # EPG
+        + _sf(0xD3A9A8, b"\x40" * 8)                     # EDT
+    )
+    page = extract_pages(list(iter_fields(doc)))[0]
+    assert len(page.images) == 1
+    im = page.images[0]
+    assert im.mime == "image/png" and im.crisp and im.data
+    # IOC origin (100, 200) image points at 300 dpi → page L-units at 1440 upi.
+    assert (im.x, im.y) == (100 * 1440 // 300, 200 * 1440 // 300)
+    assert (im.x, im.y) != (0, 0)
+
+
+def test_page_segment_im_image_placed_by_ips():
+    """An IM image wrapped in a page segment leaves the IOC zero and is placed
+    by the page's IPS offset (resource referenced by the enclosing BRS name)."""
+    seg = (
+        _sf(0xD3A8CE, _name8("IMSEG001"))                # BRS (named resource)
+        + _sf(0xD3A85F, b"\x40" * 8)                     # BPS (blank name)
+        + _im_object(_IID_16x8, _RASTER_16x8)            # BII...EII, IOC zero
+        + _sf(0xD3A95F, b"\x40" * 8)                     # EPS
+        + _sf(0xD3A9CE, _name8("IMSEG001"))              # ERS
+    )
+    ips = _name8("IMSEG001") + (6236).to_bytes(3, "big") + (1758).to_bytes(3, "big")
+    doc = (
+        _sf(0xD3A8A8, b"\x40" * 8)                       # BDT
+        + _sf(0xD3A8C6, b"\x40" * 8) + seg + _sf(0xD3A9C6, b"\x40" * 8)  # BRG
+        + _sf(0xD3A8AF, b"\x40" * 8)                     # BPG
+        + _sf(0xD3A8C9, b"\x40" * 8) + _sf(0xD3A6AF, _pgd(upi=1440))
+        + _sf(0xD3A9C9, b"\x40" * 8)                     # EAG
+        + _sf(0xD3AF5F, ips)                             # IPS
+        + _sf(0xD3A9AF, b"\x40" * 8)                     # EPG
+        + _sf(0xD3A9A8, b"\x40" * 8)                     # EDT
+    )
+    page = extract_pages(list(iter_fields(doc)))[0]
+    assert len(page.images) == 1
+    im = page.images[0]
+    assert im.mime == "image/png" and im.crisp
+    # IOC is zero, so the placement is exactly the IPS offset.
+    assert (im.x, im.y) == (6236, 1758)
